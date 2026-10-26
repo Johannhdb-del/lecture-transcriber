@@ -19,6 +19,8 @@
   --tint: rgba(31, 31, 29, 0.045);
   --hit-bg: #fde68a;
   --hit-cur: #f6b73c;
+  --now-bg: #fde68a;
+  --now-text: var(--text);
   --sp0: #3d6b8f;
   --sp1: #a14a2a;
   --sp2: #2f7d5b;
@@ -51,6 +53,8 @@
     --tint: rgba(255, 255, 255, 0.055);
     --hit-bg: rgba(253, 230, 138, 0.28);
     --hit-cur: rgba(246, 183, 60, 0.55);
+    --now-bg: #a16207;
+    --now-text: #fff8e6;
     --sp0: #8fbbe8;
     --sp1: #e8a085;
     --sp2: #7fd0a6;
@@ -553,6 +557,17 @@ span.ts { cursor: default; }
 .fixed { border-bottom: 2px dotted var(--green); }
 .hit { background: var(--hit-bg); border-radius: 3px; color: inherit; }
 .hit.current { background: var(--hit-cur); }
+
+/* Word marker: the word being spoken (see updateWord in transcript-view.js). Keeps the uncertain and fixed underlines. */
+.w { transition: background-color 80ms ease-out; -webkit-tap-highlight-color: transparent; }
+.has-audio .w { cursor: pointer; }
+.w.w-now {
+  background: var(--now-bg);
+  color: var(--now-text);
+  border-radius: 3px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
 
 .float-slot { position: relative; height: 0; z-index: 8; flex: none; }
 .float-bar {

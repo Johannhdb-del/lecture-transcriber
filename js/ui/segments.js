@@ -2,6 +2,7 @@
 import { isUncertainWord, sentenceId } from "../correction.js";
 import { translationFor } from "../claude-tasks.js";
 import { h } from "./dom.js";
+import { timedWords } from "../word-timing.js";
 
 const tokens = (text) => String(text || "").split(/\s+/).filter(Boolean);
 
@@ -11,15 +12,17 @@ function wordsMatchText(words, text) {
 
 function pushRun(runs, run) {
   const last = runs[runs.length - 1];
-  if (last && !last.cls && !run.cls && !last.title && !run.title) last.text += run.text;
+  // Word runs (with a start time s) always stay separate so each word can get its own element.
+  if (last && !last.cls && !run.cls && !last.title && !run.title && last.s == null && run.s == null) last.text += run.text;
   else runs.push(run);
 }
 
 /**
  * Runs for one paragraph: [{ text, cls, title }]. cls is "", "uncertain" or "fixed".
  * With translated = true the translated sentences are used (original where missing).
+ * With timed = true every word becomes its own run with its start time s (for the playback marker).
  */
-export function buildRuns(t, pi, { uncertain = true, translated = false } = {}) {
+export function buildRuns(t, pi, { uncertain = true, translated = false, timed = false } = {}) {
   const p = t.paragraphs[pi];
   const runs = [];
   (p.sentences || []).forEach((s, si) => {
@@ -30,6 +33,21 @@ export function buildRuns(t, pi, { uncertain = true, translated = false } = {}) 
       return;
     }
     const words = Array.isArray(s.words) ? s.words : [];
+    if (timed && !translated) {
+      const matched = wordsMatchText(words, s.text);
+      const tw = timedWords(matched ? s : { text: s.text, start: s.start, end: s.end });
+      if (tw && tw.length) {
+        tw.forEach((w, i) => {
+          if (i) pushRun(runs, { text: " ", cls: "" });
+          let cls = "";
+          let title;
+          if (matched && w.fixed) { cls = "fixed"; title = "Corrected with Claude"; }
+          else if (matched && uncertain && isUncertainWord(w)) { cls = "uncertain"; title = `Uncertain (${Math.round(Number(w.c) * 100)}%)`; }
+          pushRun(runs, { text: String(w.t), cls, title, s: w.s });
+        });
+        return;
+      }
+    }
     if (!wordsMatchText(words, s.text)) {
       pushRun(runs, { text: String(s.text || ""), cls: "" });
       return;
@@ -76,12 +94,20 @@ function piece(run, text, hit) {
   return el;
 }
 
-/** Render runs to a fragment. matches: [{ start, end, idx }] sorted, relative to the runs text. */
-export function renderRuns(runs, matches = []) {
+/**
+ * Render runs to a fragment. matches: [{ start, end, idx }] sorted, relative to the runs text.
+ * Word runs (with s) become one span.w each; words, if given, collects { el, s } in order.
+ */
+export function renderRuns(runs, matches = [], words = null) {
   const frag = document.createDocumentFragment();
   let pos = 0;
   let mi = 0;
-  for (const run of runs) {
+  for (const run0 of runs) {
+    const isWord = run0.s != null;
+    const wordEl = isWord ? h("span", { class: run0.cls ? `w ${run0.cls}` : "w", title: run0.title || null }) : null;
+    if (wordEl) wordEl.dataset.s = String(run0.s);
+    const run = isWord ? { text: run0.text, cls: "" } : run0;
+    const out = wordEl || frag;
     const runEnd = pos + run.text.length;
     let cursor = pos;
     while (cursor < runEnd) {
@@ -93,8 +119,12 @@ export function renderRuns(runs, matches = []) {
         if (m.start > cursor) segEnd = m.start;
         else { segEnd = Math.min(m.end, runEnd); hit = m; }
       }
-      frag.append(piece(run, run.text.slice(cursor - pos, segEnd - pos), hit));
+      out.append(piece(run, run.text.slice(cursor - pos, segEnd - pos), hit));
       cursor = segEnd;
+    }
+    if (wordEl) {
+      frag.append(wordEl);
+      if (words) words.push({ el: wordEl, s: run0.s });
     }
     pos = runEnd;
   }

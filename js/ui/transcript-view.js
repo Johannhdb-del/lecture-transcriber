@@ -13,6 +13,7 @@ import {
 } from "./dom.js";
 import { state, getPlayer } from "./state.js";
 import { buildRuns, renderRuns, findMatches, runsText, segmentAt } from "./segments.js";
+import { findWordIndex } from "../word-timing.js";
 import { createPlayerBar } from "./player-bar.js";
 import { createSidePanel } from "./side-panel.js";
 import { createClaudeFlow } from "./claude-flow.js";
@@ -79,6 +80,9 @@ function buildView(ctx, loaded) {
   let lastUserScroll = 0;
   let segEls = [];
   let paraStarts = [];
+  let segWords = []; // per segment: [{ el, s }] for the word marker, empty when markers are off
+  let nowEl = null; // the word element that currently has w-now
+  let rafId = 0;
   let activeFlow = null;
   let panelSheetOpen = false;
   let canShare = false;
@@ -265,8 +269,9 @@ function buildView(ctx, loaded) {
     hitsByPara = new Map();
     const q = searchOpen ? searchInput.value : "";
     if (!q.trim()) { hitIndex = -1; return; }
+    const timed = markersOn();
     t.paragraphs.forEach((p, pi) => {
-      const runs = buildRuns(t, pi, { uncertain, translated });
+      const runs = buildRuns(t, pi, { uncertain, translated, timed });
       for (const m of findMatches(runsText(runs), q)) {
         const hit = { ...m, pi, idx: hits.length };
         hits.push(hit);
@@ -307,8 +312,11 @@ function buildView(ctx, loaded) {
         : h("span", { class: "ts", text: stamp(p.start) }));
     }
 
-    const runs = buildRuns(t, pi, { uncertain, translated });
-    const textEl = h("p", { class: "seg-text" }, renderRuns(runs, hitsByPara.get(pi) || []));
+    const timed = markersOn();
+    const runs = buildRuns(t, pi, { uncertain, translated, timed });
+    const words = [];
+    const textEl = h("p", { class: "seg-text" }, renderRuns(runs, hitsByPara.get(pi) || [], words));
+    segWords[pi] = words;
     if (edit) {
       textEl.setAttribute("contenteditable", "true");
       textEl.setAttribute("role", "textbox");
@@ -341,6 +349,8 @@ function buildView(ctx, loaded) {
     paraStarts = t.paragraphs.map((p) => Number(p.start) || 0);
     body.classList.toggle("editing", edit);
     lastFocused = -1;
+    segWords = [];
+    nowEl = null;
 
     if (!t.paragraphs.length) {
       segEls = [];
@@ -363,6 +373,7 @@ function buildView(ctx, loaded) {
     playingIdx = -1;
     if (keep >= 0) setPlaying(keep, false);
     markCurrentHit(false);
+    updateWord(false);
   }
 
   // Save the text of one segment after it was edited. The text stays as typed, no redraw.
@@ -455,8 +466,75 @@ function buildView(ctx, loaded) {
     const el = segEls[idx];
     if (!el) return;
     el.classList.add("playing");
-    if (scroll && player.playing && Date.now() - lastUserScroll > 4000) ensureVisible(el);
+    // With the word marker the current word is kept in view instead (see updateWord).
+    if (scroll && !markersOn() && player.playing && Date.now() - lastUserScroll > 4000) ensureVisible(el);
   }
+
+  /* Word marker ----------------------------------------------------- */
+
+  // Word spans exist only with audio, in the original text and outside edit mode.
+  function markersOn() {
+    return hasAudio && !edit && shown === "original";
+  }
+
+  function clearNow() {
+    if (nowEl) nowEl.classList.remove("w-now");
+    nowEl = null;
+  }
+
+  // Keep the word about 35 percent from the top once it leaves the visible part, unless the user just scrolled.
+  function keepWordVisible(el) {
+    if (Date.now() - lastUserScroll < 4000) return;
+    const r = el.getBoundingClientRect();
+    const c = scroller.getBoundingClientRect();
+    if (r.top >= c.top + 60 && r.bottom <= c.bottom - 160) return;
+    const top = scroller.scrollTop + (r.top - c.top) - c.height * 0.35;
+    scroller.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+  }
+
+  // Moves w-now to the word at the current time. Only the old and the new element are touched.
+  function updateWord(scroll) {
+    if (!markersOn() || destroyed) { clearNow(); return; }
+    const time = player.currentTime;
+    if (time <= 0 && !player.playing) { clearNow(); return; }
+    const words = segWords[segmentAt(paraStarts, time)];
+    const wi = words && words.length ? findWordIndex(words, time) : -1;
+    const next = wi >= 0 ? words[wi].el : null;
+    if (next === nowEl) return;
+    clearNow();
+    if (!next) return;
+    next.classList.add("w-now");
+    nowEl = next;
+    if (scroll && player.playing) keepWordVisible(next);
+  }
+
+  function frame() {
+    rafId = 0;
+    if (destroyed || !player.playing) return;
+    updateWord(true);
+    rafId = requestAnimationFrame(frame);
+  }
+
+  function onPlayState(playing) {
+    if (playing) {
+      if (!rafId) rafId = requestAnimationFrame(frame);
+    } else {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+      updateWord(false);
+    }
+  }
+
+  // Tap or click a word to jump there; play or pause state stays as it is.
+  body.addEventListener("click", (e) => {
+    if (!markersOn()) return;
+    const w = e.target && e.target.closest ? e.target.closest(".w") : null;
+    if (!w || !body.contains(w)) return;
+    const sel = window.getSelection ? window.getSelection() : null;
+    if (sel && !sel.isCollapsed && String(sel).length) return;
+    const s = Number(w.dataset.s);
+    if (Number.isFinite(s)) player.seek(s);
+  });
 
   function ensureVisible(el) {
     const r = el.getBoundingClientRect();
@@ -468,6 +546,9 @@ function buildView(ctx, loaded) {
     if (!hasAudio) return;
     const idx = sec > 0 || player.playing ? segmentAt(paraStarts, sec) : -1;
     if (idx !== playingIdx) setPlaying(idx, true);
+    // Seek while paused, and a fallback during playback when frames are throttled (e.g. low power mode).
+    updateWord(player.playing);
+    if (player.playing && !rafId) rafId = requestAnimationFrame(frame);
   }
 
   function playFrom(pi) {
@@ -986,6 +1067,8 @@ function buildView(ctx, loaded) {
 
   disposers.push(player.on("time", onTime));
   disposers.push(player.on("state", showListenState));
+  disposers.push(player.on("state", onPlayState));
+  disposers.push(() => { cancelAnimationFrame(rafId); rafId = 0; });
   disposers.push(player.on("error", (e) => toast(errorMessage(e))));
   loadAudio();
 
@@ -995,6 +1078,7 @@ function buildView(ctx, loaded) {
 
   function onKey(e) {
     if (isDialogOpen()) return;
+    if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(e.key) && !isTyping(e.target)) lastUserScroll = Date.now();
     const mod = e.metaKey || e.ctrlKey;
     const key = (e.key || "").toLowerCase();
 

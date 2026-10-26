@@ -320,7 +320,14 @@ export function normalizeDeepgramResponse(json, { title, language, keyterms, smo
     s.words = idx
       .map((i) => {
         const c = Number(words[i].confidence);
-        return { t: words[i].punctuated_word || words[i].word || "", c: Number.isFinite(c) ? Math.round(c * 100) / 100 : 1 };
+        const w = { t: words[i].punctuated_word || words[i].word || "", c: Number.isFinite(c) ? Math.round(c * 100) / 100 : 1 };
+        const s = Number(words[i].start);
+        const e = Number(words[i].end);
+        if (Number.isFinite(s) && Number.isFinite(e)) {
+          w.s = Math.round(s * 100) / 100;
+          w.e = Math.max(w.s, Math.round(e * 100) / 100);
+        }
+        return w;
       })
       .filter((w) => w.t);
     s._speaker = idx.length ? majoritySpeaker(words, idx) : undefined;

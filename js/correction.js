@@ -243,8 +243,9 @@ export function parseAnswer(text) {
 /* ------------------------------------------------------------------ */
 
 // Words for the new text: tokens that survive keep their word object (and confidence),
-// changed or new tokens become { t, c: 1, fixed: true }. Alignment is a longest common subsequence.
-function realignWords(oldWords, newText) {
+// changed or new tokens become { t, c: 1, fixed: true, s, e } with times interpolated between the kept
+// neighbours. Alignment is a longest common subsequence.
+function realignWords(oldWords, newText, bounds = {}) {
   const newTokens = tokenize(newText);
   const n = oldWords.length;
   const m = newTokens.length;
@@ -260,8 +261,27 @@ function realignWords(oldWords, newText) {
   while (j < m) {
     if (i < n && oldWords[i].t === newTokens[j]) { out.push({ ...oldWords[i] }); i++; j++; }
     else if (i < n && lcs[i + 1][j] >= lcs[i][j + 1]) i++;
-    else { out.push({ t: newTokens[j], c: 1, fixed: true }); j++; }
+    else { out.push({ t: newTokens[j], c: 1, fixed: true, _new: true }); j++; }
   }
+  // Times: new tokens share the gap between the neighbouring kept tokens (or the sentence bounds) evenly.
+  const isNum = (v) => typeof v === "number" && Number.isFinite(v);
+  for (let a = 0; a < out.length; ) {
+    if (!out[a]._new) { a++; continue; }
+    let b = a;
+    while (b < out.length && out[b]._new) b++;
+    const lo = a > 0 ? out[a - 1].e : bounds.start;
+    let hi = b < out.length ? out[b].s : bounds.end;
+    if (isNum(lo) && isNum(hi)) {
+      if (hi < lo) hi = lo;
+      const k = b - a;
+      for (let x = 0; x < k; x++) {
+        out[a + x].s = x === 0 ? lo : Math.round((lo + ((hi - lo) * x) / k) * 100) / 100;
+        out[a + x].e = x === k - 1 ? hi : Math.round((lo + ((hi - lo) * (x + 1)) / k) * 100) / 100;
+      }
+    }
+    a = b;
+  }
+  for (const w of out) delete w._new;
   return out;
 }
 
@@ -287,7 +307,7 @@ export function applyCorrections(transcript, corrections) {
     const oldWords = currentWords(sentence);
     const text = sentence.text.slice(0, hit.index) + correction.replace + sentence.text.slice(hit.index + hit.length);
     sentence.text = tokenize(text).join(" ");
-    sentence.words = realignWords(oldWords, sentence.text);
+    sentence.words = realignWords(oldWords, sentence.text, { start: sentence.start, end: sentence.end });
 
     if (!next.originalParagraphs && original) next.originalParagraphs = original;
     if (!Array.isArray(next.corrections)) next.corrections = [];
