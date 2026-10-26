@@ -5,6 +5,7 @@ import * as fmt from "../format.js";
 import * as exp from "../export.js";
 import * as media from "../media-store.js";
 import { createRecorder, isRecordingSupported, recoverRecordings, recoverRecording } from "../recorder.js";
+import { createLiveTranscriber, liveToTranscript } from "../live.js";
 import {
   h, icon, iconBtn, pill, selectWrap, alertBox, errorMessage, baseName, plural, dedupeTerms,
   formatDateTime, clock, LANGUAGES,
@@ -15,6 +16,23 @@ const MAX_TERMS_WARNING = 50;
 const MAX_FILE_BYTES = 2 * 1024 * 1024 * 1024;
 const METER_BARS = 36;
 const CHUNK_SECONDS = 5; // the recorder saves a chunk every 5 seconds
+const LIVE_SCROLL_HOLD_MS = 4000; // no auto scroll for this long after the user scrolled the live text
+const LIVE_PARA_GAP_SEC = 2;      // pause that starts a new paragraph in the live panel
+const LIVE_PARA_WORDS = 120;      // words after which a new paragraph starts
+
+const LIVE_CHIP = {
+  connecting: "Connecting",
+  open: "Live",
+  reconnecting: "Reconnecting",
+  failed: "Live text off",
+  closed: "Live text off",
+  idle: "Connecting",
+};
+
+function countWords(text) {
+  const t = String(text || "").trim();
+  return t ? t.split(/\s+/).length : 0;
+}
 
 /* Wake lock while the transcription runs ----------------------------- */
 
@@ -55,6 +73,16 @@ export function createNewView(ctx) {
     recorder: null,
     recovered: null,        // session id of a recovered recording that is still stored as chunks
     levels: new Array(METER_BARS).fill(0),
+    // Live transcript while recording
+    live: null,             // the active live transcriber, or null
+    liveSnap: { finals: [], interim: "" },
+    liveResult: null,       // { finals, durationSec } of the last recording, kept for "Save live text"
+    liveLang: "de",
+    liveTerms: [],
+    liveParas: [],          // rendered paragraphs: { el, words, end }
+    liveRendered: 0,        // number of finals already rendered
+    liveUserAt: 0,          // time of the last touch or scroll by the user in the live box
+    savingLive: false,
   };
   const alert = alertBox();
 
@@ -84,11 +112,26 @@ export function createNewView(ctx) {
     Array.from({ length: METER_BARS }, () => h("span", { class: "meter-bar" })));
   const pauseBtn = pill("Pause", { iconName: "pause", onclick: () => togglePause() });
   const stopBtn = pill("Stop", { iconName: "stop", primary: true, onclick: () => stopRecording() });
+  // Live transcript panel (below the record controls)
+  const liveChip = h("span", { class: "live-chip", "data-state": "connecting", text: "Connecting" });
+  const liveNote = h("span", { class: "live-note", hidden: true });
+  const liveEmpty = h("p", { class: "live-empty", text: "The text appears here as it is spoken." });
+  const liveInterim = h("span", { class: "live-interim" });
+  const liveBody = h("div", { class: "live-box", role: "log", "aria-label": "Live transcript", tabindex: "0" }, liveEmpty);
+  const markUser = () => { st.liveUserAt = Date.now(); };
+  for (const ev of ["touchstart", "touchmove", "wheel", "pointerdown"]) {
+    liveBody.addEventListener(ev, markUser, { passive: true });
+  }
+  const livePanel = h("div", { class: "live-panel", hidden: true },
+    h("div", { class: "live-head" }, liveChip, liveNote),
+    liveBody);
+
   const recPanel = h("div", { class: "rec-panel", hidden: true },
     h("div", { class: "rec-top" }, recDot, recTime, recState),
     meter,
     h("p", { class: "hint", text: "Keep this screen on and stay in this app while recording. Locking the screen or switching apps can interrupt the microphone." }),
-    h("div", { class: "btn-row" }, pauseBtn, stopBtn));
+    h("div", { class: "btn-row" }, pauseBtn, stopBtn),
+    livePanel);
 
   // Ready panel (opened from the Record button in the sidebar)
   const readyPanel = h("div", { class: "rec-ready", hidden: true },
@@ -193,8 +236,19 @@ export function createNewView(ctx) {
         iconBtn("x", "Remove file", () => removeFile(), "ghost")),
     ];
     if (st.source === "recording") {
-      nodes.push(h("div", { class: "btn-row" },
-        pill("Save to device", { iconName: "download", cls: "small", onclick: () => saveToDevice() })));
+      const hasLive = hasLiveText();
+      const row = [];
+      if (hasLive) {
+        row.push(pill("Transcribe in full quality", { primary: true, iconName: "sparkle", cls: "small", onclick: () => start() }));
+        const saveLiveBtn = pill("Save live text", { iconName: "text", cls: "small", onclick: () => saveLive() });
+        saveLiveBtn.disabled = st.savingLive;
+        row.push(saveLiveBtn);
+      }
+      row.push(pill("Save to device", { iconName: "download", cls: "small", onclick: () => saveToDevice() }));
+      nodes.push(h("div", { class: "btn-row" }, row));
+      if (hasLive) {
+        nodes.push(h("p", { class: "hint", text: "Full quality is recommended. It adds speaker labels, your keyterms and exact word times. The live text is quicker but simpler." }));
+      }
     }
     placeholder.replaceChildren(...nodes);
   }
@@ -206,6 +260,7 @@ export function createNewView(ctx) {
     placeholder.hidden = busy || recording || m === "ready";
     readyPanel.hidden = m !== "ready";
     recPanel.hidden = !recording;
+    livePanel.hidden = !st.live;
     progress.hidden = !busy;
     actions.hidden = busy || recording;
     sendBtn.disabled = !st.file || busy || recording;
@@ -227,7 +282,7 @@ export function createNewView(ctx) {
 
   function setFile(file, source) {
     alert.clear();
-    if (source === "upload") st.recovered = null;
+    if (source === "upload") { st.recovered = null; st.liveResult = null; }
     st.file = file;
     st.source = source;
     if (st.mode === "ready") st.mode = "idle";
@@ -237,6 +292,7 @@ export function createNewView(ctx) {
   function removeFile() {
     st.file = null;
     st.recovered = null;
+    st.liveResult = null;
     update();
   }
 
@@ -301,24 +357,57 @@ export function createNewView(ctx) {
     }
     if (st.file && st.source === "recording" && !window.confirm("Replace the current recording? It has not been transcribed yet. Use Save to device first if you want to keep it.")) return;
 
+    // Live text is optional and must never get in the way of the recording itself.
+    let live = null;
+    st.liveResult = null;
+    resetLivePanel();
+    const apiKey = storage.getApiKey();
+    if (storage.getSettings().liveTranscript !== false && apiKey) {
+      try {
+        st.liveLang = langSelect.value;
+        st.liveTerms = getTerms();
+        live = createLiveTranscriber({
+          apiKey,
+          language: st.liveLang,
+          keyterms: st.liveTerms,
+          onUpdate: (u) => { if (st.live === live) renderLive(u); },
+          onStatus: (s) => { if (st.live === live) setLiveStatus(s); },
+        });
+      } catch (err) {
+        live = null;
+        alert.show(`Live text unavailable: ${errorMessage(err)}`, "warn");
+      }
+    }
+
     const rec = createRecorder({
       onLevel: pushLevel,
       onTick: (sec) => { recTime.textContent = clock(sec); },
       onError: (err) => alert.show(errorMessage(err), "warn"),
+      ...(live ? { onPcm: (buf) => { try { live.sendPcm(buf); } catch { /* live text must not stop the recording */ } } } : {}),
     });
     st.mode = "starting";
     st.levels.fill(0);
     recTime.textContent = "0:00";
     setBusy({ recording: true });
+    st.live = live;
+    if (live) setLiveStatus({ state: "connecting", message: "" });
     update();
     try {
       await rec.start(); // called inside the click, so the browser allows the microphone prompt
     } catch (err) {
+      st.live = null;
+      stopLive(live);
       st.mode = "idle";
       setBusy({ recording: false });
       alert.show(errorMessage(err));
       update();
       return;
+    }
+    if (live) {
+      // Not awaited: the recording starts right away, audio is buffered until the socket is open.
+      Promise.resolve()
+        .then(() => live.start())
+        .catch((err) => { if (st.live === live) setLiveStatus({ state: "failed", message: errorMessage(err) }); });
     }
     st.recorder = rec;
     st.mode = "recording";
@@ -328,8 +417,15 @@ export function createNewView(ctx) {
   function togglePause() {
     const rec = st.recorder;
     if (!rec) return;
-    if (st.mode === "recording") { rec.pause(); st.mode = "paused"; }
-    else if (st.mode === "paused") { rec.resume(); st.mode = "recording"; }
+    if (st.mode === "recording") {
+      rec.pause();
+      st.mode = "paused";
+      if (st.live) { try { st.live.pause(); } catch { /* ignore */ } }
+    } else if (st.mode === "paused") {
+      rec.resume();
+      st.mode = "recording";
+      if (st.live) { try { st.live.resume(); } catch { /* ignore */ } }
+    }
     update();
   }
 
@@ -341,16 +437,146 @@ export function createNewView(ctx) {
     try {
       const out = await rec.stop();
       const file = new File([out.blob], out.name, { type: out.type || out.blob.type || "audio/mp4" });
+      const live = st.live;
+      const result = live ? await stopLive(live) : null;
+      st.live = null;
+      st.liveResult = liveResultFrom(result);
       st.recorder = null;
       st.mode = "idle";
       st.recovered = null;
       setBusy({ recording: false });
       setFile(file, "recording");
     } catch (err) {
+      stopLive(st.live);
+      st.live = null;
       st.recorder = null;
       st.mode = "idle";
       setBusy({ recording: false });
       alert.show(errorMessage(err));
+      update();
+    }
+  }
+
+  /* Live transcript ----------------------------------------------------- */
+
+  function hasLiveText() {
+    const r = st.liveResult;
+    return !!(r && Array.isArray(r.finals) && r.finals.some((f) => f && String(f.text || "").trim()));
+  }
+
+  /** Stop the live transcriber and resolve with its result, or null if that fails. Never throws. */
+  async function stopLive(live) {
+    if (!live) return null;
+    try { return await live.stop(); } catch { return null; }
+  }
+
+  /** The result of live.stop(), or the last text shown on screen if stop gave nothing. */
+  function liveResultFrom(result) {
+    if (result && Array.isArray(result.finals) && result.finals.length) return result;
+    const finals = st.liveSnap.finals || [];
+    if (!finals.length) return null;
+    const last = finals[finals.length - 1];
+    return { finals, durationSec: Number(result && result.durationSec) || Number(last && last.end) || 0 };
+  }
+
+  function resetLivePanel() {
+    st.liveSnap = { finals: [], interim: "" };
+    st.liveParas = [];
+    st.liveRendered = 0;
+    st.liveUserAt = 0;
+    liveInterim.textContent = "";
+    liveBody.replaceChildren(liveEmpty);
+    liveNote.hidden = true;
+    liveNote.textContent = "";
+  }
+
+  function setLiveStatus(s) {
+    const stateName = s && s.state ? s.state : "connecting";
+    liveChip.dataset.state = stateName;
+    liveChip.textContent = LIVE_CHIP[stateName] || "Live";
+    // Only problems are worth a sentence; "connected" is already shown by the chip.
+    const msg = s && s.message && (stateName === "failed" || stateName === "reconnecting" || stateName === "closed") ? s.message : "";
+    liveNote.textContent = msg;
+    liveNote.hidden = !msg;
+  }
+
+  function newLivePara() {
+    const el = h("p", { class: "live-para" });
+    const para = { el, words: 0, end: 0 };
+    if (liveEmpty.parentNode) liveEmpty.remove();
+    liveBody.append(el);
+    st.liveParas.push(para);
+    return para;
+  }
+
+  function renderLive(u) {
+    try {
+      const finals = u && Array.isArray(u.finals) ? u.finals : [];
+      const interim = u && u.interim ? String(u.interim).trim() : "";
+      st.liveSnap = { finals, interim };
+
+      const box = liveBody;
+      const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
+      const holdScroll = Date.now() - st.liveUserAt < LIVE_SCROLL_HOLD_MS && !nearBottom;
+
+      if (finals.length < st.liveRendered) { // should not happen, start over to stay correct
+        liveBody.replaceChildren(liveEmpty);
+        st.liveParas = [];
+        st.liveRendered = 0;
+      }
+      for (let i = st.liveRendered; i < finals.length; i++) {
+        const f = finals[i];
+        const text = f && f.text ? String(f.text).trim() : "";
+        if (!text) continue;
+        let para = st.liveParas[st.liveParas.length - 1];
+        const start = Number(f.start) || 0;
+        if (!para || para.words >= LIVE_PARA_WORDS || (para.words > 0 && start - para.end > LIVE_PARA_GAP_SEC)) {
+          para = newLivePara();
+        }
+        // Keep the interim span out of the way while text is added before it.
+        if (liveInterim.parentNode === para.el) liveInterim.remove();
+        para.el.append(document.createTextNode(`${para.words ? " " : ""}${text}`));
+        para.words += countWords(text);
+        para.end = Number(f.end) || start;
+      }
+      st.liveRendered = finals.length;
+
+      if (interim) {
+        let para = st.liveParas[st.liveParas.length - 1] || newLivePara();
+        liveInterim.textContent = `${para.words ? " " : ""}${interim}`;
+        para.el.append(liveInterim);
+      } else {
+        liveInterim.textContent = "";
+        liveInterim.remove();
+      }
+
+      if (!holdScroll) box.scrollTop = box.scrollHeight;
+    } catch { /* never let the live panel break the recording */ }
+  }
+
+  async function saveLive() {
+    if (st.savingLive || state.running || !st.file || !hasLiveText()) return;
+    alert.clear();
+    st.savingLive = true;
+    update();
+    const file = st.file;
+    let transcript = null;
+    try {
+      transcript = liveToTranscript(st.liveResult, {
+        title: baseName(file.name),
+        language: st.liveLang,
+        keyterms: st.liveTerms,
+      });
+    } catch (err) {
+      st.savingLive = false;
+      alert.show(`Could not build the transcript from the live text. ${errorMessage(err)}`);
+      update();
+      return;
+    }
+    try {
+      await finishTranscript(transcript, file, st.liveLang, st.liveTerms);
+    } finally {
+      st.savingLive = false;
       update();
     }
   }
@@ -381,6 +607,7 @@ export function createNewView(ctx) {
     try {
       const r = await recoverRecording(sessionId);
       const file = new File([r.blob], r.name, { type: r.type || "audio/mp4" });
+      st.liveResult = null;
       setFile(file, "recording");
       st.recovered = sessionId;
       update();
@@ -489,7 +716,11 @@ export function createNewView(ctx) {
       return;
     }
     st.job = null;
+    await finishTranscript(transcript, file, language, keyterms);
+  }
 
+  /** Fill in defaults, store audio and transcript, then open it. Shared by full quality and live text. */
+  async function finishTranscript(transcript, file, language, keyterms) {
     let audioNote = "";
     try {
       if (!transcript.id) transcript.id = crypto.randomUUID();
@@ -518,8 +749,9 @@ export function createNewView(ctx) {
       st.recovered = null;
     }
     releaseWakeLock();
-    setRunning(false);
+    if (st.mode === "running") setRunning(false);
     st.file = null;
+    st.liveResult = null;
     extraTerms.value = "";
     updateTerms();
     update();

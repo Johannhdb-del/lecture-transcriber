@@ -134,6 +134,27 @@ export function createSettingsView(ctx) {
         h("p", { class: "hint", text: "Fixes false speaker switches in the middle of a sentence. Applies to new transcriptions." })),
       defaultsStatus);
 
+    // Recording
+    const liveBox = h("input", {
+      type: "checkbox",
+      id: "live-transcript",
+      checked: settings.liveTranscript !== false,
+      onchange() { storage.saveSettings({ liveTranscript: liveBox.checked }); flashRecording(); },
+    });
+    const recordingStatus = h("span", { class: "status", role: "status" });
+    let recTimer = null;
+    function flashRecording() {
+      recordingStatus.textContent = "Saved";
+      clearTimeout(recTimer);
+      recTimer = setTimeout(() => { recordingStatus.textContent = ""; }, 2000);
+    }
+    const recordingCard = h("section", { class: "card stack" },
+      h("h2", { text: "Recording" }),
+      h("div", { class: "field" },
+        h("label", { class: "check", for: "live-transcript" }, liveBox, h("span", { text: "Show live transcript while recording" })),
+        h("p", { class: "hint", text: "The text appears on screen as it is spoken. It adds about $0.45 per 90 minutes. The full transcription after recording stays available." })),
+      recordingStatus);
+
     // Keyterm lists
     const listsBox = h("div", { class: "stack-sm" });
     for (const list of storage.listKeytermLists()) listsBox.append(keytermItem(list, list.id === openId, alert));
@@ -219,7 +240,7 @@ export function createSettingsView(ctx) {
       h("h2", { text: "Privacy" }),
       h("p", { text: "Audio goes directly from this device to Deepgram, with the setting that opts out of Deepgram using it to improve their models. Transcripts, audio and your key stay on this device. There is no server of ours in between." }));
 
-    inner.replaceChildren(h("h1", { text: "Settings" }), alert.el, defaultsCard, listsCard, audioCard, keyCard, tipCard);
+    inner.replaceChildren(h("h1", { text: "Settings" }), alert.el, defaultsCard, recordingCard, listsCard, audioCard, keyCard, tipCard);
   }
 
   function keytermItem(list, open, alert) {

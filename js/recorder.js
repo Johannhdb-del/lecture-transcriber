@@ -111,7 +111,7 @@ async function sniffType(blob) {
   return "audio/mp4";
 }
 
-export function createRecorder({ onLevel, onTick, onChunkSaved, onError } = {}) {
+export function createRecorder({ onLevel, onTick, onChunkSaved, onError, onPcm } = {}) {
   let state = "idle"; // idle | recording | paused | stopping
   let sessionId = null;
   let mediaRecorder = null;
@@ -119,6 +119,8 @@ export function createRecorder({ onLevel, onTick, onChunkSaved, onError } = {}) 
   let audioCtx = null;
   let analyser = null;
   let sourceNode = null;
+  let pcmNode = null; // AudioWorkletNode feeding onPcm (16 kHz Int16 frames)
+  let pcmSink = null; // zero gain node that keeps the worklet in the pulled graph
   let wakeLock = null;
   let mimeType = "";
   let startedAt = null;
@@ -270,6 +272,23 @@ export function createRecorder({ onLevel, onTick, onChunkSaved, onError } = {}) 
       /* ignore */
     }
     sourceNode = null;
+    if (pcmNode) {
+      try {
+        pcmNode.port.onmessage = null;
+        pcmNode.disconnect();
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    if (pcmSink) {
+      try {
+        pcmSink.disconnect();
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    pcmNode = null;
+    pcmSink = null;
     analyser = null;
     if (audioCtx) {
       const ctx = audioCtx;
@@ -363,6 +382,35 @@ export function createRecorder({ onLevel, onTick, onChunkSaved, onError } = {}) 
           sourceNode.connect(analyser); // not connected to destination: no feedback
         } catch (e) {
           analyser = null;
+        }
+      }
+
+      // Optional PCM tap for live transcription. Failure never stops the recording.
+      if (typeof onPcm === "function") {
+        try {
+          if (!ctx || !sourceNode) throw new Error("no audio graph");
+          if (!ctx.audioWorklet || typeof AudioWorkletNode !== "function") throw new Error("no AudioWorklet");
+          await ctx.audioWorklet.addModule(new URL("./pcm-worklet.js", import.meta.url).href);
+          const node = new AudioWorkletNode(ctx, "pcm-downsampler", {
+            numberOfInputs: 1,
+            numberOfOutputs: 1,
+            channelCount: 1,
+            channelCountMode: "explicit",
+          });
+          node.port.onmessage = (ev) => {
+            if (state === "recording" && ev.data) safeCall(onPcm, ev.data);
+          };
+          // Zero gain to the destination: Safari only pulls nodes that reach the output, and nothing is audible.
+          const sink = ctx.createGain();
+          sink.gain.value = 0;
+          sourceNode.connect(node);
+          node.connect(sink);
+          sink.connect(ctx.destination);
+          pcmNode = node;
+          pcmSink = sink;
+          if (ctx.state !== "running") ctx.resume().catch(() => {});
+        } catch (e) {
+          report("Live text could not start (the audio filter failed to load). Recording continues without it.");
         }
       }
 

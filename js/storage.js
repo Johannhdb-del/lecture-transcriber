@@ -66,6 +66,7 @@ const DEFAULT_SETTINGS = {
   diarizer: "v1",
   keytermListId: "",
   smoothSpeakers: true,
+  liveTranscript: true,   // show live text while recording (needs the key; costs a little extra)
   highlightUncertain: true,
   textSize: "m",          // "s" | "m" | "l"
   showTimestamps: true,
