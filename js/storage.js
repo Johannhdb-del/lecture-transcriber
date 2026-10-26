@@ -61,7 +61,19 @@ export function clearApiKey() {
 
 // ---- Settings ----
 
-const DEFAULT_SETTINGS = { language: "de", diarizer: "v1", keytermListId: "" };
+const DEFAULT_SETTINGS = {
+  language: "de",
+  diarizer: "v1",
+  keytermListId: "",
+  smoothSpeakers: true,
+  highlightUncertain: true,
+  textSize: "m",          // "s" | "m" | "l"
+  showTimestamps: true,
+  sidebarOpen: null,      // null = decide by screen width on first start
+  panelOpen: null,        // null = open on wide screens
+  panelTab: "notes",
+  playbackRate: 1,
+};
 
 export function getSettings() {
   const saved = lsGetJSON(KEY_SETTINGS, {});

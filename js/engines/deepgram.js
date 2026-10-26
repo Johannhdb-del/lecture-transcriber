@@ -85,6 +85,7 @@ export function transcribe({
   keyterms = [],
   diarizer = "v1",
   smartFormat = false,
+  smoothSpeakers = true,
   onUploadProgress,
 }) {
   const xhr = new XMLHttpRequest();
@@ -118,7 +119,7 @@ export function transcribe({
       try {
         const json = JSON.parse(xhr.responseText);
         const title = (file.name || "").replace(/\.[^.]+$/, "") || "Untitled";
-        resolve(normalizeDeepgramResponse(json, { title, language, keyterms }));
+        resolve(normalizeDeepgramResponse(json, { title, language, keyterms, smoothSpeakers }));
       } catch (e) {
         reject(makeError("Could not read the answer from Deepgram."));
       }
@@ -167,9 +168,128 @@ function paragraphsFromWords(words) {
   }));
 }
 
-export function normalizeDeepgramResponse(json, { title, language, keyterms } = {}) {
+const MIN_SPEAKER_RUN = 8;      // runs shorter than this are treated as diarization glitches
+const SENTENCE_TOLERANCE = 0.05; // seconds, when mapping words to sentences by time
+const MERGE_GAP_SEC = 1.5;
+const SHORT_PARAGRAPH_WORDS = 25;
+const LOW_CONFIDENCE = 0.6;
+
+// Deepgram's diarizer sometimes flips the speaker for a few words in the middle of a sentence.
+// Returns new word objects in which short runs (< minWords) between two runs of the same other
+// speaker take that speaker, and short runs at the very start or end take their neighbour's speaker.
+export function smoothSpeakers(words, minWords = MIN_SPEAKER_RUN) {
+  const out = (Array.isArray(words) ? words : []).map((w) => ({ ...w }));
+  const n = out.length;
+  for (let pass = 0; pass < 100; pass++) {
+    const runs = [];
+    for (let i = 0; i < n; ) {
+      let j = i + 1;
+      while (j < n && out[j].speaker === out[i].speaker) j++;
+      runs.push({ from: i, to: j, speaker: out[i].speaker });
+      i = j;
+    }
+    if (runs.length < 2) break;
+    let changed = false;
+    runs.forEach((run, k) => {
+      const len = run.to - run.from;
+      if (len >= minWords) return;
+      const prev = runs[k - 1];
+      const next = runs[k + 1];
+      let target;
+      let hasTarget = false;
+      if (prev && next) {
+        if (prev.speaker === next.speaker) { target = prev.speaker; hasTarget = true; }
+      } else {
+        // Edge run: follow the single neighbour, unless that neighbour is shorter (avoids swapping two tiny runs).
+        const nb = prev || next;
+        const nbLen = nb.to - nb.from;
+        if (nbLen > len || (nbLen === len && k === 0)) { target = nb.speaker; hasTarget = true; }
+      }
+      if (!hasTarget) return;
+      for (let i = run.from; i < run.to; i++) out[i].speaker = target;
+      changed = true;
+    });
+    if (!changed) break;
+  }
+  return out;
+}
+
+// Assigns each word (by start time) to a sentence. Returns, per sentence, the list of word indices.
+function mapWordsToSentences(sentences, words) {
+  const buckets = sentences.map(() => []);
+  let ptr = 0;
+  for (let i = 0; i < words.length; i++) {
+    const t = words[i].start;
+    while (ptr < sentences.length && sentences[ptr].end + SENTENCE_TOLERANCE < t) ptr++;
+    if (ptr >= sentences.length) break;
+    let pick = -1;
+    for (let k = ptr; k < Math.min(ptr + 2, sentences.length); k++) {
+      const s = sentences[k];
+      if (t >= s.start - SENTENCE_TOLERANCE && t <= s.end + SENTENCE_TOLERANCE) {
+        if (t >= s.start && t < s.end) { pick = k; break; }
+        if (pick < 0) pick = k;
+      }
+    }
+    if (pick >= 0) buckets[pick].push(i);
+  }
+  return buckets;
+}
+
+function majoritySpeaker(words, indices) {
+  const counts = new Map();
+  for (const i of indices) counts.set(words[i].speaker, (counts.get(words[i].speaker) || 0) + 1);
+  let best;
+  let bestCount = 0;
+  for (const [speaker, count] of counts) {
+    if (count > bestCount) { best = speaker; bestCount = count; }
+  }
+  return best;
+}
+
+function paragraphWordCount(p) {
+  return p.sentences.reduce((sum, s) => sum + s.text.split(/\s+/).filter(Boolean).length, 0);
+}
+
+// Splits paragraphs where the (smoothed) sentence speaker changes, then merges neighbours that now
+// share a speaker when they are close in time and short, or when the boundary came from a corrected run.
+function rebuildParagraphs(paragraphs) {
+  const groups = [];
+  for (const p of paragraphs) {
+    let cur = null;
+    let lastSpeaker = p.speaker;
+    for (const s of p.sentences) {
+      const speaker = s._speaker === undefined ? lastSpeaker : s._speaker;
+      lastSpeaker = speaker;
+      if (!cur || cur.speaker !== speaker) {
+        cur = { speaker, start: cur ? s.start : p.start, end: s.end, sentences: [] };
+        groups.push(cur);
+      }
+      cur.sentences.push(s);
+      cur.end = s.end;
+    }
+    if (cur) cur.end = p.end;
+  }
+  const out = [];
+  for (const g of groups) {
+    const prev = out[out.length - 1];
+    if (prev && prev.speaker === g.speaker && g.start - prev.end < MERGE_GAP_SEC) {
+      const short = paragraphWordCount(prev) < SHORT_PARAGRAPH_WORDS || paragraphWordCount(g) < SHORT_PARAGRAPH_WORDS;
+      const fixed = prev.sentences[prev.sentences.length - 1]._fixed || g.sentences[0]._fixed;
+      if (short || fixed) {
+        prev.sentences.push(...g.sentences);
+        prev.end = g.end;
+        continue;
+      }
+    }
+    out.push(g);
+  }
+  return out;
+}
+
+export function normalizeDeepgramResponse(json, { title, language, keyterms, smoothSpeakers: smooth = true } = {}) {
   const alt = json?.results?.channels?.[0]?.alternatives?.[0] || {};
-  const words = Array.isArray(alt.words) ? alt.words : [];
+  const rawWords = Array.isArray(alt.words) ? alt.words : [];
+  const words = smooth ? smoothSpeakers(rawWords) : rawWords; // same order and length as rawWords
   const dgParagraphs = alt.paragraphs?.paragraphs;
 
   let paragraphs;
@@ -192,12 +312,35 @@ export function normalizeDeepgramResponse(json, { title, language, keyterms } = 
     paragraphs = paragraphsFromWords(words);
   }
 
+  // Attach the words (with confidence) to each sentence and work out each sentence's majority speaker.
+  const flat = paragraphs.flatMap((p) => p.sentences);
+  const buckets = mapWordsToSentences(flat, words);
+  flat.forEach((s, k) => {
+    const idx = buckets[k];
+    s.words = idx
+      .map((i) => {
+        const c = Number(words[i].confidence);
+        return { t: words[i].punctuated_word || words[i].word || "", c: Number.isFinite(c) ? Math.round(c * 100) / 100 : 1 };
+      })
+      .filter((w) => w.t);
+    s._speaker = idx.length ? majoritySpeaker(words, idx) : undefined;
+    s._fixed = smooth && idx.some((i) => words[i].speaker !== rawWords[i].speaker);
+  });
+  if (smooth) paragraphs = rebuildParagraphs(paragraphs);
+  paragraphs = paragraphs.map((p) => ({
+    speaker: p.speaker,
+    start: p.start,
+    end: p.end,
+    sentences: p.sentences.map((s) => ({ text: s.text, start: s.start, end: s.end, words: s.words })),
+  }));
+
   const terms = Array.isArray(keyterms) ? keyterms.slice() : [];
   let durationSec = Number(json?.metadata?.duration);
   if (!Number.isFinite(durationSec) || durationSec <= 0) {
     durationSec = words.length ? words[words.length - 1].end : 0;
   }
   const confSum = words.reduce((sum, w) => sum + (Number(w.confidence) || 0), 0);
+  const lowConfidence = words.filter((w) => Number.isFinite(Number(w.confidence)) && Math.round(Number(w.confidence) * 100) / 100 < LOW_CONFIDENCE).length;
 
   return {
     id: globalThis.crypto?.randomUUID ? crypto.randomUUID() : `t-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -213,6 +356,7 @@ export function normalizeDeepgramResponse(json, { title, language, keyterms } = 
     stats: {
       words: words.length,
       avgConfidence: words.length ? Math.round((confSum / words.length) * 10000) / 10000 : 0,
+      lowConfidence,
     },
     costUsd: Math.round(estimateCost(durationSec, terms.length > 0) * 10000) / 10000,
   };

@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Lecture Transcriber</title>
   <meta name="description" content="Turn lecture recordings into readable, speaker labelled transcripts. Everything stays on this device.">
-  <meta name="theme-color" content="#f7f6f2" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#15171a" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f7f6f3" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1c1b19" media="(prefers-color-scheme: dark)">
   <meta name="color-scheme" content="light dark">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
@@ -18,23 +18,8 @@
   <link rel="stylesheet" href="./css/style.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="topbar-inner">
-      <a class="brand" href="#new">Lecture Transcriber</a>
-      <nav id="nav" class="tabs" aria-label="Main" hidden>
-        <a href="#new" data-tab="new">New</a>
-        <a href="#history" data-tab="history">History</a>
-        <a href="#settings" data-tab="settings">Settings</a>
-      </nav>
-    </div>
-  </header>
-
-  <main id="main" class="page">
-    <div id="view-new" hidden></div>
-    <div id="view" hidden></div>
-    <noscript><p class="notice">This app needs JavaScript to run.</p></noscript>
-  </main>
-
+  <div id="app"></div>
+  <noscript><p class="notice">This app needs JavaScript to run.</p></noscript>
   <script type="module" src="./js/app.js"></script>
 </body>
 </html>
