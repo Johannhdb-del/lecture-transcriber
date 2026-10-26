@@ -80,7 +80,7 @@ export function createNewView(ctx) {
     liveLang: "de",
     liveTerms: [],
     liveParas: [],          // rendered paragraphs: { el, words, end }
-    liveRendered: 0,        // number of finals already rendered
+    liveRendered: 0,        // number of closed finals already rendered (the open one is redrawn each update)
     liveUserAt: 0,          // time of the last touch or scroll by the user in the live box
     savingLive: false,
   };
@@ -116,6 +116,7 @@ export function createNewView(ctx) {
   const liveChip = h("span", { class: "live-chip", "data-state": "connecting", text: "Connecting" });
   const liveNote = h("span", { class: "live-note", hidden: true });
   const liveEmpty = h("p", { class: "live-empty", text: "The text appears here as it is spoken." });
+  const liveOpen = h("span", { class: "live-open" });   // final words of the utterance still being spoken
   const liveInterim = h("span", { class: "live-interim" });
   const liveBody = h("div", { class: "live-box", role: "log", "aria-label": "Live transcript", tabindex: "0" }, liveEmpty);
   const markUser = () => { st.liveUserAt = Date.now(); };
@@ -484,6 +485,7 @@ export function createNewView(ctx) {
     st.liveParas = [];
     st.liveRendered = 0;
     st.liveUserAt = 0;
+    liveOpen.textContent = "";
     liveInterim.textContent = "";
     liveBody.replaceChildren(liveEmpty);
     liveNote.hidden = true;
@@ -509,6 +511,15 @@ export function createNewView(ctx) {
     return para;
   }
 
+  /** The paragraph that text starting at `start` goes into, opening a new one after a pause or long paragraph. */
+  function liveParaFor(start) {
+    const para = st.liveParas[st.liveParas.length - 1];
+    if (!para || para.words >= LIVE_PARA_WORDS || (para.words > 0 && start - para.end > LIVE_PARA_GAP_SEC)) {
+      return newLivePara();
+    }
+    return para;
+  }
+
   function renderLive(u) {
     try {
       const finals = u && Array.isArray(u.finals) ? u.finals : [];
@@ -519,35 +530,43 @@ export function createNewView(ctx) {
       const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 48;
       const holdScroll = Date.now() - st.liveUserAt < LIVE_SCROLL_HOLD_MS && !nearBottom;
 
-      if (finals.length < st.liveRendered) { // should not happen, start over to stay correct
+      // The snapshot ends with the still open utterance (open: true), which grows with every
+      // is_final result. Only closed utterances become fixed text; the open one is redrawn each time.
+      const last = finals[finals.length - 1];
+      const open = last && last.open ? last : null;
+      const closedCount = open ? finals.length - 1 : finals.length;
+
+      if (closedCount < st.liveRendered) { // should not happen, start over to stay correct
         liveBody.replaceChildren(liveEmpty);
         st.liveParas = [];
         st.liveRendered = 0;
       }
-      for (let i = st.liveRendered; i < finals.length; i++) {
+      // Keep the open and interim spans out of the way while fixed text is added before them.
+      liveOpen.remove();
+      liveInterim.remove();
+      for (let i = st.liveRendered; i < closedCount; i++) {
         const f = finals[i];
         const text = f && f.text ? String(f.text).trim() : "";
         if (!text) continue;
-        let para = st.liveParas[st.liveParas.length - 1];
         const start = Number(f.start) || 0;
-        if (!para || para.words >= LIVE_PARA_WORDS || (para.words > 0 && start - para.end > LIVE_PARA_GAP_SEC)) {
-          para = newLivePara();
-        }
-        // Keep the interim span out of the way while text is added before it.
-        if (liveInterim.parentNode === para.el) liveInterim.remove();
+        const para = liveParaFor(start);
         para.el.append(document.createTextNode(`${para.words ? " " : ""}${text}`));
         para.words += countWords(text);
         para.end = Number(f.end) || start;
       }
-      st.liveRendered = finals.length;
+      st.liveRendered = closedCount;
 
-      if (interim) {
-        let para = st.liveParas[st.liveParas.length - 1] || newLivePara();
-        liveInterim.textContent = `${para.words ? " " : ""}${interim}`;
-        para.el.append(liveInterim);
+      const openText = open && open.text ? String(open.text).trim() : "";
+      if (openText || interim) {
+        const para = openText
+          ? liveParaFor(Number(open.start) || 0)
+          : st.liveParas[st.liveParas.length - 1] || newLivePara();
+        liveOpen.textContent = openText ? `${para.words ? " " : ""}${openText}` : "";
+        liveInterim.textContent = `${para.words || openText ? " " : ""}${interim}`;
+        para.el.append(liveOpen, liveInterim);
       } else {
+        liveOpen.textContent = "";
         liveInterim.textContent = "";
-        liveInterim.remove();
       }
 
       if (!holdScroll) box.scrollTop = box.scrollHeight;
