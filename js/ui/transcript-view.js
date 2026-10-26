@@ -35,6 +35,16 @@ const EXPORT_FORMATS = [
 const normalize = (s) => String(s || "").replace(/\s+/g, " ").trim();
 const settings = () => storage.getSettings();
 
+const LEAD_MIN = -0.5;
+const LEAD_MAX = 1.0;
+const LEAD_STEP = 0.05;
+const clampLead = (v) => Math.min(LEAD_MAX, Math.max(LEAD_MIN, Math.round(v * 100) / 100));
+function readMarkerLead() {
+  const v = Number(settings().markerLead);
+  return Number.isFinite(v) ? clampLead(v) : 0.12;
+}
+const formatLead = (v) => (Math.abs(v) < 0.005 ? "in sync" : `${Math.abs(v).toFixed(2)} s ${v > 0 ? "early" : "late"}`);
+
 function messagePage(text, withLink = false) {
   return {
     el: h("div", { class: "page" }, h("div", { class: "page-inner stack" },
@@ -83,6 +93,7 @@ function buildView(ctx, loaded) {
   let segWords = []; // per segment: [{ el, s }] for the word marker, empty when markers are off
   let nowEl = null; // the word element that currently has w-now
   let rafId = 0;
+  let markerLead = readMarkerLead(); // seconds; cached so the frame loop does not read storage
   let activeFlow = null;
   let panelSheetOpen = false;
   let canShare = false;
@@ -495,8 +506,9 @@ function buildView(ctx, loaded) {
   // Moves w-now to the word at the current time. Only the old and the new element are touched.
   function updateWord(scroll) {
     if (!markersOn() || destroyed) { clearNow(); return; }
-    const time = player.currentTime;
-    if (time <= 0 && !player.playing) { clearNow(); return; }
+    const raw = player.smoothTime();
+    if (raw <= 0 && !player.playing) { clearNow(); return; }
+    const time = Math.max(0, raw + markerLead);
     const words = segWords[segmentAt(paraStarts, time)];
     const wi = words && words.length ? findWordIndex(words, time) : -1;
     const next = wi >= 0 ? words[wi].el : null;
@@ -544,7 +556,8 @@ function buildView(ctx, loaded) {
 
   function onTime(sec) {
     if (!hasAudio) return;
-    const idx = sec > 0 || player.playing ? segmentAt(paraStarts, sec) : -1;
+    const eff = markersOn() && player.playing ? Math.max(0, player.smoothTime() + markerLead) : sec;
+    const idx = sec > 0 || player.playing ? segmentAt(paraStarts, eff) : -1;
     if (idx !== playingIdx) setPlaying(idx, true);
     // Seek while paused, and a fallback during playback when frames are throttled (e.g. low power mode).
     updateWord(player.playing);
@@ -946,6 +959,14 @@ function buildView(ctx, loaded) {
       },
     }));
 
+    const leadValue = h("span", { class: "lead-value muted", text: formatLead(markerLead), "aria-live": "polite" });
+    const stepLead = (delta) => {
+      markerLead = clampLead(markerLead + delta);
+      storage.saveSettings({ markerLead });
+      leadValue.textContent = formatLead(markerLead);
+      updateWord(false);
+    };
+
     const box = h("div", { class: "menu", role: "menu" },
       menuItem({ iconName: "pencil", label: "Rename", onclick: done(startRename) }),
       canShare ? menuItem({ iconName: "share", label: "Share", onclick: done(share) }) : null,
@@ -969,7 +990,14 @@ function buildView(ctx, loaded) {
       switchRow({
         label: "Highlight uncertain words", checked: s.highlightUncertain !== false,
         onchange(on) { storage.saveSettings({ highlightUncertain: on }); renderBody(); },
-      }));
+      }),
+      h("div", { class: "menu-row" },
+        h("span", { class: "menu-icon-gap" }),
+        h("span", { class: "menu-label-text", text: "Marker timing" }),
+        leadValue,
+        h("div", { class: "size-group", role: "group", "aria-label": "Marker timing" },
+          h("button", { type: "button", class: "lead-btn", text: "Earlier", onclick() { stepLead(LEAD_STEP); } }),
+          h("button", { type: "button", class: "lead-btn", text: "Later", onclick() { stepLead(-LEAD_STEP); } }))));
     openPopover(moreBtn, box);
   }
 

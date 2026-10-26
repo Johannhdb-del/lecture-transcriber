@@ -61,6 +61,45 @@ export function createPlayer() {
     }
   }
 
+  // Smooth clock: audio.currentTime advances in coarse steps on iOS Safari, so the time between
+  // updates is interpolated with performance.now(). The anchor pairs a media time with a clock reading.
+  const MAX_AHEAD = 0.6; // never run further than this ahead of the raw media time
+  const MAX_BACK = 0.02; // tolerated backward step between two reads
+  const anchor = { media: 0, perf: 0, raw: 0 };
+  let lastSmooth = null;
+
+  function reanchor() {
+    const raw = audio.currentTime || 0;
+    anchor.media = raw;
+    anchor.raw = raw;
+    anchor.perf = performance.now();
+    lastSmooth = null; // jumps (seek, rate change, play, pause) are exact
+  }
+
+  for (const ev of ["play", "playing", "pause", "seeking", "seeked", "ratechange", "waiting", "loadedmetadata"]) {
+    audio.addEventListener(ev, reanchor);
+  }
+
+  function smoothTime() {
+    const raw = audio.currentTime || 0;
+    if (audio.paused || audio.ended) return raw;
+    if (raw !== anchor.raw) {
+      // The media clock moved: new anchor, but keep the output from jumping backwards.
+      anchor.media = raw;
+      anchor.raw = raw;
+      anchor.perf = performance.now();
+    }
+    const elapsed = Math.max(0, (performance.now() - anchor.perf) / 1000);
+    let t = anchor.media + elapsed * (audio.playbackRate || 1);
+    t = Math.min(t, raw + MAX_AHEAD);
+    if (lastSmooth !== null) t = Math.max(t, lastSmooth - MAX_BACK);
+    const d = audio.duration;
+    if (Number.isFinite(d) && d > 0) t = Math.min(t, d);
+    t = Math.max(0, t);
+    lastSmooth = t;
+    return t;
+  }
+
   audio.addEventListener("play", () => {
     startTimer();
     emit("state", true);
@@ -192,6 +231,9 @@ export function createPlayer() {
     get currentTime() {
       return audio.currentTime || 0;
     },
+
+    // Interpolated playback time for smooth UI such as the word marker.
+    smoothTime,
 
     get duration() {
       const d = audio.duration;

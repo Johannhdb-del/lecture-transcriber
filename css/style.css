@@ -266,6 +266,8 @@ input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--primary)
 .size-group { display: flex; gap: 4px; }
 .size-btn { width: 44px; height: 44px; border: 0; border-radius: 12px; background: none; color: var(--text); cursor: pointer; font: inherit; }
 .size-btn[aria-pressed="true"] { background: var(--panel); }
+.lead-value { font-size: 14px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lead-btn { height: 36px; padding: 0 10px; border: 0; border-radius: 10px; background: var(--panel); color: var(--text); cursor: pointer; font: inherit; font-size: 14px; }
 .size-s { font-size: 14px; }
 .size-m { font-size: 18px; }
 .size-l { font-size: 23px; }

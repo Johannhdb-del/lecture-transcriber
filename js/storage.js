@@ -69,6 +69,7 @@ const DEFAULT_SETTINGS = {
   highlightUncertain: true,
   textSize: "m",          // "s" | "m" | "l"
   showTimestamps: true,
+  markerLead: 0.12,       // seconds the word marker runs ahead of the audio (-0.5 to 1.0)
   sidebarOpen: null,      // null = decide by screen width on first start
   panelOpen: null,        // null = open on wide screens
   panelTab: "notes",
