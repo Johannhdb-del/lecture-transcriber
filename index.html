@@ -1,15 +1,40 @@
 <!doctype html>
-<html lang="de">
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Lecture Transcriber</title>
-  <style>
-    body { font-family: -apple-system, system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }
-  </style>
+  <meta name="description" content="Turn lecture recordings into readable, speaker labelled transcripts. Everything stays on this device.">
+  <meta name="theme-color" content="#f7f6f2" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#15171a" media="(prefers-color-scheme: dark)">
+  <meta name="color-scheme" content="light dark">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Transcriber">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icon.svg">
+  <link rel="stylesheet" href="./css/style.css">
 </head>
 <body>
-  <h1>Lecture Transcriber</h1>
-  <p>Setup works. The app will appear here.</p>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="#new">Lecture Transcriber</a>
+      <nav id="nav" class="tabs" aria-label="Main" hidden>
+        <a href="#new" data-tab="new">New</a>
+        <a href="#history" data-tab="history">History</a>
+        <a href="#settings" data-tab="settings">Settings</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" class="page">
+    <div id="view-new" hidden></div>
+    <div id="view" hidden></div>
+    <noscript><p class="notice">This app needs JavaScript to run.</p></noscript>
+  </main>
+
+  <script type="module" src="./js/app.js"></script>
 </body>
 </html>
