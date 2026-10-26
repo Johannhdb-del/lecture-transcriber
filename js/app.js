@@ -274,6 +274,11 @@ async function route() {
 
 window.addEventListener("hashchange", route);
 
+// Keeps the app up to date after each release and lets it open without a connection.
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js").catch(() => {});
+}
+
 /* ------------------------------------------------------------------ */
 /* Global behaviour                                                    */
 /* ------------------------------------------------------------------ */
