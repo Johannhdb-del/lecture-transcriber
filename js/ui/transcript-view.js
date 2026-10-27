@@ -18,6 +18,8 @@ import { createPlayerBar } from "./player-bar.js";
 import { createSidePanel } from "./side-panel.js";
 import { createClaudeFlow } from "./claude-flow.js";
 import { buildCorrectionReview, correctionResultNode } from "./correction-ui.js";
+import { checkTerms } from "../term-check.js";
+import { courseDocTerms, combineTerms, CHECK_TERM_LIMIT } from "../course-terms.js";
 
 const SIZES = { s: "16px", m: "19px", l: "22px" };
 const MAX_UNDO = 50;
@@ -740,19 +742,71 @@ function buildView(ctx, loaded) {
     flowHost.replaceChildren();
   }
 
-  function openFlow(kind) {
+  async function openFlow(kind) {
     if (activeFlow === kind) { closeFlow(); return; }
     closeFlow();
     activeFlow = kind;
-    const node = kind === "correct" ? buildCorrectFlow() : buildTranslateFlow();
+    // The correction prompt also lists the terms of the course documents.
+    const docTerms = kind === "correct" ? await courseDocTerms(t.courseId) : [];
+    if (activeFlow !== kind) return; // closed or switched meanwhile
+    const node = kind === "correct" ? buildCorrectFlow(docTerms) : kind === "terms" ? buildTermsFlow() : buildTranslateFlow();
     flowHost.replaceChildren(node);
     node.scrollIntoView({ block: "start", behavior: "smooth" });
   }
 
-  function buildCorrectFlow() {
+  /** The course of this transcript: its own, else the default keyterm list. */
+  function courseIdOf() {
+    const lists = storage.listKeytermLists();
+    if (t.courseId && lists.some((l) => l.id === t.courseId)) return t.courseId;
+    const def = storage.getSettings().keytermListId;
+    return lists.some((l) => l.id === def) ? def : "";
+  }
+
+  function buildTermsFlow() {
+    const lists = storage.listKeytermLists();
+    const select = h("select", { "aria-label": "Course" },
+      h("option", { value: "", text: "Choose a course" }),
+      ...lists.map((l) => h("option", { value: l.id, text: l.name })));
+    select.value = courseIdOf();
+    const result = h("div", { class: "stack-sm" });
+
+    async function run() {
+      result.replaceChildren(h("p", { class: "muted", text: "Checking" }));
+      const courseId = select.value;
+      if (!courseId) { result.replaceChildren(h("p", { class: "muted", text: "Choose the course whose terms should be checked." })); return; }
+      if (t.courseId !== courseId) { t = { ...t, courseId }; scheduleSave(); } // remembered for next time and for Correct with Claude
+      const list = lists.find((l) => l.id === courseId);
+      const terms = combineTerms((list && list.terms) || [], await courseDocTerms(courseId), CHECK_TERM_LIMIT);
+      if (!terms.length) {
+        result.replaceChildren(h("p", { class: "muted", text: "This course has no terms yet. Add terms or documents in Settings, under Keyterm lists." }));
+        return;
+      }
+      let corrections = [];
+      try {
+        ({ corrections } = checkTerms(t, terms, { language: t.language }));
+      } catch (err) {
+        result.replaceChildren(h("p", { class: "alert warn", text: `The check failed. ${errorMessage(err)}` }));
+        return;
+      }
+      if (!corrections.length) {
+        result.replaceChildren(h("p", { text: `No likely misspellings of the ${plural(terms.length, "course term", "course terms")} were found.` }));
+        return;
+      }
+      result.replaceChildren(buildCorrectionReview({ transcript: t, corrections, onApply: applyNow, heading: "Review and apply" }));
+    }
+
+    select.addEventListener("change", run);
+    run();
+    return flowCard("Check course terms",
+      h("p", { class: "muted", text: "Compares the transcript with your keyterms and the terms from the course documents, and suggests fixes for words that look or sound like a misheard term. Nothing changes until you apply them." }),
+      h("div", { class: "field" }, h("label", { text: "Course" }), selectWrap(select)),
+      result);
+  }
+
+  function buildCorrectFlow(docTerms = []) {
     const flow = createClaudeFlow({
       intro: "Claude never rewrites the transcript. It only suggests small find and replace corrections, and nothing changes until you apply them. Paste the prompt into a new Claude chat (a strong model works best), wait for the JSON answer, then copy the whole answer.",
-      getPrompts: () => [corr.buildPrompt(t, { keyterms: t.keyterms })],
+      getPrompts: () => [corr.buildPrompt(t, { keyterms: t.keyterms, docTerms })],
       fileBase: () => `${t.title || "transcript"}_claude_prompt`,
       checkLabel: "Check answer",
       onCheck(text) {
@@ -974,6 +1028,7 @@ function buildView(ctx, loaded) {
       menuItem({ iconName: "search", label: "Search", onclick: done(openSearch) }),
       menuSeparator(),
       menuItem({ iconName: "sparkle", label: "Correct with Claude", onclick: done(() => openFlow("correct")) }),
+      menuItem({ iconName: "check", label: "Check course terms", onclick: done(() => openFlow("terms")) }),
       menuItem({ iconName: "globe", label: "Translate", onclick: done(() => openFlow("translate")) }),
       t.originalParagraphs ? menuItem({ iconName: "undo", label: "Revert corrections", onclick: done(revert) }) : null,
       menuItem({ iconName: "trash", label: "Delete", danger: true, onclick: done(deleteThis) }),

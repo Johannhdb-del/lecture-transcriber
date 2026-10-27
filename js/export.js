@@ -157,6 +157,49 @@ export function toVTT(t) {
   return "WEBVTT\n\n" + cues.join("\n\n") + (cues.length ? "\n" : "");
 }
 
+// ---- Mind map (OPML 2.0) ----
+
+// Escape for XML text and attributes; control characters are not allowed in XML 1.0 and are removed.
+const xmlEscape = (s) =>
+  String(s == null ? "" : s)
+    .replace(/[\u0000-\u001F\u007F-\u009F￾￿]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+
+function opmlOutline(node, depth) {
+  const pad = "  ".repeat(depth);
+  const note = Number.isFinite(node.time) ? ` _note="${formatTime(node.time)}"` : "";
+  const open = `${pad}<outline text="${xmlEscape(node.title)}"${note}`;
+  const kids = Array.isArray(node.children) ? node.children : [];
+  if (!kids.length) return `${open}/>`;
+  return `${open}>\n${kids.map((k) => opmlOutline(k, depth + 1)).join("\n")}\n${pad}</outline>`;
+}
+
+export function mindMapToOpml(t) {
+  const root = t && t.mindMap;
+  if (!root || typeof root !== "object" || !root.title) return "";
+  const created = new Date(t.createdAt);
+  const head = [`    <title>${xmlEscape(t.title) || "Mind map"}</title>`];
+  if (t.createdAt && !isNaN(created)) head.push(`    <dateCreated>${created.toUTCString()}</dateCreated>`);
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<opml version="2.0">',
+    "  <head>",
+    ...head,
+    "  </head>",
+    "  <body>",
+    opmlOutline(root, 2),
+    "  </body>",
+    "</opml>",
+    "",
+  ].join("\n");
+}
+
 // ---- Files ----
 
 const TRANSLITERATION = { "ä": "ae", "ö": "oe", "ü": "ue", "Ä": "Ae", "Ö": "Oe", "Ü": "Ue", "ß": "ss" };

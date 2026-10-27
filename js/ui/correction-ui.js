@@ -6,7 +6,7 @@ const TYPE_LABELS = { fix: "Fix", guess: "Guess", format: "Format" };
 const CONTEXT_CHARS = 60;
 
 /** Build the review node. onApply(selectedCorrections) is called when the user confirms. */
-export function buildCorrectionReview({ transcript, corrections, onApply }) {
+export function buildCorrectionReview({ transcript, corrections, onApply, heading = "3. Review and apply" }) {
   const progressive = new Map(); // line id -> text after the earlier corrections of this list
   const items = [];              // { correction, checkbox }
   const list = h("ul", { class: "review-list" });
@@ -75,7 +75,7 @@ export function buildCorrectionReview({ transcript, corrections, onApply }) {
   }
 
   const node = h("div", { class: "flow-step stack-sm" },
-    h("h3", { text: "3. Review and apply" }),
+    h("h3", { text: heading }),
     h("p", { text: `${plural(corrections.length, "suggestion", "suggestions")}. Fixes and format changes are selected, guesses are not.` }),
     h("div", { class: "btn-row" },
       pill("Select all", { onclick: () => setAll(true) }),

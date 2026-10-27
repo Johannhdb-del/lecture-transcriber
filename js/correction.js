@@ -102,8 +102,30 @@ function markedText(s) {
   return words.map((w) => (isUncertainWord(w) ? `${MARK_OPEN}${w.t}${MARK_CLOSE}` : String(w.t))).join(" ");
 }
 
-export function buildPrompt(transcript, { keyterms } = {}) {
+// Terms joined with ", " and wrapped into lines of about `width` characters.
+function wrapTerms(list, width = 100) {
+  const lines = [];
+  let line = "";
+  list.forEach((t, i) => {
+    const piece = i < list.length - 1 ? `${t},` : t;
+    if (line && line.length + 1 + piece.length > width) { lines.push(line); line = piece; }
+    else line = line ? `${line} ${piece}` : piece;
+  });
+  if (line) lines.push(line);
+  return lines;
+}
+
+export function buildPrompt(transcript, { keyterms, docTerms } = {}) {
   const terms = (keyterms ?? transcript.keyterms ?? []).map((k) => String(k).trim()).filter(Boolean);
+  const known = new Set(terms.map((k) => k.toLowerCase()));
+  const literature = [];
+  for (const k of docTerms || []) {
+    const t = String(k).trim();
+    if (!t || known.has(t.toLowerCase())) continue;
+    known.add(t.toLowerCase());
+    literature.push(t);
+  }
+  literature.length = Math.min(literature.length, 150);
   const language = LANGUAGE_NAMES[transcript.language] || transcript.language || "unknown";
 
   const lines = [
@@ -118,10 +140,15 @@ export function buildPrompt(transcript, { keyterms } = {}) {
     lines.push("Course terms (correct spellings of names and technical words, one per line):");
     lines.push(...terms);
   }
+  if (literature.length) {
+    lines.push("Terms from the course literature (correct spellings, use them to check names and technical words):");
+    lines.push(...wrapTerms(literature));
+  }
   lines.push(
     "",
     "RULES",
     "- Correct misheard words, names, technical terms, foreign words (English loanwords, Latin), place names and obvious garbled phrases.",
+    ...(literature.length ? ["- Words that sound like a term from the course literature are probably that term; correct them, but only when the context fits."] : []),
     "- Do NOT change style, the grammar of spoken language, filler words, repetitions or word order. Do not improve the lecture.",
     `- Words marked ${MARK_OPEN}like this${MARK_CLOSE} were uncertain for the recognizer. Check them first, but they may be correct. Do not include the ${MARK_OPEN} ${MARK_CLOSE} marks in "find" or "replace".`,
     '- "find" must be an exact substring of that line\'s text (without the line id, the speaker name and the marks), as short as possible but unique within that line. Include a neighbouring word if needed.',

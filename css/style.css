@@ -495,6 +495,17 @@ input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--primary)
 .kt { border: 1px solid var(--border); border-radius: 16px; padding: 0 14px; background: var(--bg); }
 .kt summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 52px; cursor: pointer; font-weight: 600; }
 .kt-body { padding: 4px 0 16px; }
+.doc-row { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 12px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.doc-name { flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
+.term-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.term-chip {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 10px;
+  border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--text);
+  font: inherit; font-size: 0.875rem; cursor: pointer;
+}
+.term-chip.sent { background: var(--panel); border-color: var(--text); }
+.term-chip:hover .term-x { color: var(--text); }
+.term-x { color: var(--muted); }
 .key-mask { font-family: var(--mono); }
 .audio-list { list-style: none; margin: 0; padding: 0; }
 .audio-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: 1px solid var(--border); }
@@ -742,4 +753,104 @@ span.ts { cursor: default; }
 @media (prefers-reduced-motion: reduce) {
   .rec-dot, .bar.indeterminate .bar-fill { animation: none; }
   .meter-bar, .switch, .switch-knob, .bar-fill { transition: none; }
+}
+
+/* ------------------------------------------------------------------ */
+/* Mind map (js/ui/mindmap.js)                                          */
+/* Branch colours cycle through --mm-1 to --mm-6; font sizes here must  */
+/* match TITLE_SIZE and TIME_SIZE in mindmap.js, which measures text.   */
+/* ------------------------------------------------------------------ */
+
+.mm-section { margin-top: 28px; }
+
+:root {
+  --mm-1: #3d6b8f;
+  --mm-2: #a14a2a;
+  --mm-3: #2f7d5b;
+  --mm-4: #7a4a9a;
+  --mm-5: #8a6a10;
+  --mm-6: #1f7a8a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --mm-1: #8fbbe8;
+    --mm-2: #e8a085;
+    --mm-3: #7fd0a6;
+    --mm-4: #c9a0e6;
+    --mm-5: #e3c765;
+    --mm-6: #7fcfdc;
+  }
+}
+
+.mindmap { position: relative; }
+
+.mm-viewport {
+  position: relative;
+  height: min(60vh, 520px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--card);
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.mm-viewport:active { cursor: grabbing; }
+.mm-svg { display: block; width: 100%; height: 100%; }
+
+.mm-toolbar {
+  position: absolute; right: 8px; bottom: 8px;
+  display: flex; gap: 6px;
+}
+.mm-btn {
+  width: 36px; height: 36px;
+  background: var(--card);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+.mm-btn:hover, .mm-btn:active { background: var(--panel); }
+
+/* Connectors */
+.mm-link { fill: none; stroke: var(--c, var(--muted)); stroke-width: 2; stroke-linecap: round; opacity: 0.75; }
+
+/* Nodes */
+.mm-node { outline: none; -webkit-tap-highlight-color: transparent; }
+.mm-box { fill: var(--bg); stroke: var(--c, var(--border)); stroke-width: 1.5; }
+.mm-l1 .mm-box { stroke-width: 2.25; }
+.mm-title { font-family: var(--font); font-size: 13px; font-weight: 400; fill: var(--text); pointer-events: none; }
+.mm-l0 .mm-title, .mm-l1 .mm-title { font-weight: 600; }
+.mm-time { font-family: var(--mono); font-size: 10.5px; fill: var(--muted); pointer-events: none; }
+.mm-seek { cursor: pointer; }
+.mm-seek:hover .mm-box { fill: var(--panel); }
+.mm-node:focus-visible > .mm-box { stroke-width: 3.5; }
+
+/* Root: filled like the primary pill */
+.mm-root .mm-box { fill: var(--primary); stroke: var(--primary); }
+.mm-root .mm-title { fill: var(--primary-text); }
+.mm-root .mm-time { fill: var(--primary-text); opacity: 0.7; }
+.mm-root.mm-seek:hover .mm-box { fill: var(--primary); opacity: 0.88; }
+
+/* Fold toggle */
+.mm-toggle { cursor: pointer; outline: none; }
+.mm-hit { fill: transparent; stroke: none; }
+.mm-dot { fill: var(--card); stroke: var(--c, var(--text)); stroke-width: 1.5; }
+.mm-toggle:hover .mm-dot { fill: var(--panel); }
+.mm-toggle:focus-visible .mm-dot { stroke-width: 3; }
+.mm-count {
+  font-family: var(--font); font-size: 11px; font-weight: 600;
+  fill: var(--text); text-anchor: middle; dominant-baseline: central; pointer-events: none;
+}
+
+/* Full screen: covers the whole app, below toasts */
+.mindmap.mm-full {
+  position: fixed; inset: 0; z-index: 250;
+  display: flex; flex-direction: column;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  background: var(--bg);
+}
+.mm-full .mm-viewport { flex: 1; height: auto; border: 0; border-radius: 0; background: var(--bg); }
+.mm-full .mm-toolbar {
+  right: calc(12px + env(safe-area-inset-right));
+  bottom: calc(12px + env(safe-area-inset-bottom));
 }

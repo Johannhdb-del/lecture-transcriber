@@ -246,6 +246,114 @@ export function parseStudyAidsAnswer(text) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Mind map                                                            */
+/* ------------------------------------------------------------------ */
+
+const MAP_MAX_DEPTH = 4; // levels below the root
+const MAP_MAX_NODES = 150;
+const MAP_TITLE_KEYS = ["title", "topic", "name", "text"];
+
+export function buildMindMapPrompt(t, { language = t.language } = {}) {
+  const lang = langName(language);
+  const lines = [
+    `You are helping a university student prepare for exams. Below is the transcript of a lecture. Build a mind map of its content in ${lang}.`,
+    "",
+    "CONTEXT",
+    ...contextLines(t),
+    "",
+    "RULES",
+    "- Build a mind map of the content structure of the lecture, for exam preparation. Stay faithful to the lecture. Use only what the lecturer says. Do NOT add anything from outside the transcript, and do not invent anything.",
+    "- Correct obvious speech recognition misspellings of names and terms (use the course terms if given). Skip anything unclear.",
+    `- Write all node titles in ${lang}, whatever the language of the transcript.`,
+    "- The root is the central topic of the lecture. Below it, 4 to 8 main branches (the main themes or parts of the lecture, in the order of the lecture), each with sub-branches. At most 3 levels below the root, about 20 to 60 nodes in total.",
+    "- Node titles are short keyword phrases (1 to 6 words, 8 at most), not sentences. Key names, dates, terms and examples belong in the map as leaf nodes.",
+    '- Each node except the root gets "time": the timestamp from the transcript (as written in the square brackets, for example "12:34" or "1:02:03") of the paragraph where this point is first discussed. Leave "time" out if you are not sure. Never invent a time beyond the lecture.',
+    "- Answer with ONLY one JSON code block of exactly this form and nothing before or after it:",
+    "```json",
+    '{"title":"Central topic","children":[{"title":"Main theme","time":"3:15","children":[{"title":"Sub point","time":"4:02","children":[]}]}]}',
+    "```",
+    "- The JSON must be valid: double quotes, no trailing commas, no comments, and quotation marks inside text escaped as \\\".",
+    "",
+    "TRANSCRIPT",
+    "Timestamps in square brackets mark the start of each paragraph. A speaker name appears when the speaker changes.",
+    "",
+    transcriptBlock(t),
+  ];
+  return lines.join("\n");
+}
+
+// "m:ss", "mm:ss" or "h:mm:ss" (optionally in square brackets), or a number of seconds. Returns whole seconds or null.
+function parseMapTime(v, durationSec) {
+  let sec = null;
+  if (typeof v === "number") sec = v;
+  else if (typeof v === "string") {
+    const s = v.replace(/^\s*\[|\]\s*$/g, "").trim();
+    const m = /^(\d+):(\d{1,2})(?::(\d{1,2}))?$/.exec(s);
+    if (m) {
+      const [h, min, secs] = m[3] == null ? [0, Number(m[1]), Number(m[2])] : [Number(m[1]), Number(m[2]), Number(m[3])];
+      if (secs < 60 && (m[3] == null || min < 60)) sec = h * 3600 + min * 60 + secs;
+    } else if (/^\d+(\.\d+)?$/.test(s)) sec = Number(s);
+  }
+  if (sec == null || !Number.isFinite(sec) || sec < 0) return null;
+  sec = Math.round(sec);
+  if (Number.isFinite(durationSec) && durationSec > 0 && sec > durationSec + 5) return null;
+  return sec;
+}
+
+const mapTitle = (v) => {
+  for (const k of MAP_TITLE_KEYS) if (str(v[k])) return str(v[k]);
+  return "";
+};
+const isObj = (v) => v && typeof v === "object" && !Array.isArray(v);
+
+function normalizeMapNode(raw, depth, ctx) {
+  const title = isObj(raw) ? oneLine(mapTitle(raw)) : "";
+  if (!title) { ctx.untitled++; return null; }
+  if (ctx.count >= MAP_MAX_NODES) { ctx.capped++; return null; }
+  ctx.count++;
+  const node = { title };
+  if (raw.time != null && raw.time !== "") {
+    const time = parseMapTime(raw.time, ctx.durationSec);
+    if (time == null) ctx.badTimes++;
+    else node.time = time;
+  }
+  node.children = [];
+  for (const kid of asList(raw, "children", "branches", "nodes") || []) {
+    if (depth >= MAP_MAX_DEPTH) { ctx.deep++; continue; }
+    const child = normalizeMapNode(kid, depth + 1, ctx);
+    if (child) node.children.push(child);
+  }
+  return node;
+}
+
+export function parseMindMapAnswer(text, { durationSec } = {}) {
+  const errors = [];
+  const found = extractJson(String(text || ""), (v) => {
+    if (!isObj(v)) return null;
+    for (const c of [v, v.mindmap, v.mindMap, v.mind_map, v.root, v.map]) {
+      if (isObj(c) && mapTitle(c)) return c;
+    }
+    return null;
+  });
+  if (!found) {
+    errors.push('No JSON mind map was found in the answer. Paste Claude\'s whole reply.');
+    return { root: null, errors };
+  }
+
+  const ctx = { count: 0, untitled: 0, deep: 0, capped: 0, badTimes: 0, durationSec };
+  const root = normalizeMapNode(found, 0, ctx);
+  if (ctx.untitled) errors.push(`${ctx.untitled} node${ctx.untitled === 1 ? " has" : "s have"} no title and ${ctx.untitled === 1 ? "was" : "were"} left out.`);
+  if (ctx.deep) errors.push(`${ctx.deep} node${ctx.deep === 1 ? " is" : "s are"} nested deeper than ${MAP_MAX_DEPTH} levels below the root and ${ctx.deep === 1 ? "was" : "were"} left out.`);
+  if (ctx.capped) errors.push(`The map has more than ${MAP_MAX_NODES} nodes. ${ctx.capped} ${ctx.capped === 1 ? "was" : "were"} left out.`);
+  if (ctx.badTimes) errors.push(`${ctx.badTimes} time${ctx.badTimes === 1 ? " was" : "s were"} invalid or beyond the lecture and ${ctx.badTimes === 1 ? "was" : "were"} left out.`);
+  if (!root || !root.children.length) {
+    errors.push("The mind map has no branches below the central topic.");
+    return { root: null, errors };
+  }
+  return { root, errors };
+}
+
+/* ------------------------------------------------------------------ */
 /* Translation                                                         */
 /* ------------------------------------------------------------------ */
 

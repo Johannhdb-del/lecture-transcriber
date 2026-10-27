@@ -6,6 +6,7 @@ import { renderMarkdown } from "../markdown.js";
 import { h, icon, iconBtn, pill, selectWrap, LANGUAGES, noteStamp, copyText, toast } from "./dom.js";
 import { createClaudeFlow } from "./claude-flow.js";
 import { createOverview } from "./overview.js";
+import { createMindMap } from "./mindmap.js";
 
 const STAMP_RE = /\[(?:(\d{1,2}):)?(\d{1,2}):(\d{2})\]/g;
 const TABS = [
@@ -215,8 +216,18 @@ export function createSidePanel({ getT, patch, player, onSeek, getTime, onClose 
     return btn;
   }
 
+  // The tab holds flashcards and glossary first, then the mind map; each has its own Claude round trip.
+  const studyBox = h("div");
+  const mapBox = h("div", { class: "mm-section" });
+
+  function buildStudy() {
+    bodies.get("study").append(studyBox, mapBox);
+    renderStudy();
+    renderMindMap();
+  }
+
   function renderStudy() {
-    const body = bodies.get("study");
+    const body = studyBox;
     const t = getT();
     if (!studyLang) studyLang = t.studyLanguage || t.language || "de";
     body.replaceChildren();
@@ -262,10 +273,62 @@ export function createSidePanel({ getT, patch, player, onSeek, getTime, onClose 
   }
 
   /* -------------------------------------------------------------- */
+  /* Mind map (part of Study aids)                                   */
+  /* -------------------------------------------------------------- */
+
+  let mapReplacing = false;
+  let mapLang = null;
+  let mindMap = null;
+
+  function renderMindMap() {
+    const t = getT();
+    if (!mapLang) mapLang = t.mindMapLanguage || t.language || "de";
+    if (mindMap) { mindMap.destroy(); mindMap = null; }
+    mapBox.replaceChildren(h("h3", { text: "Mind map" }));
+
+    if (t.mindMap && !mapReplacing) {
+      mindMap = createMindMap({ root: t.mindMap, onSeek });
+      mapBox.append(h("div", { class: "stack" },
+        h("div", { class: "btn-row" },
+          pill("Download .opml", {
+            iconName: "download",
+            onclick: () => exp.downloadFile(`${exp.safeFilename(titleBase("mindmap"))}.opml`, exp.mindMapToOpml(getT()), "text/x-opml;charset=utf-8"),
+          }),
+          pill("Replace", { onclick: () => { mapReplacing = true; renderMindMap(); } })),
+        mindMap.el,
+        h("p", { class: "hint", text: "Tap a topic to jump to that part of the lecture. The .opml file opens in mind map apps such as MindNode, XMind or iThoughts." })));
+      return;
+    }
+
+    const flow = createClaudeFlow({
+      intro: "Claude builds a mind map of this lecture, with the time where each topic comes up. Copy the prompt, paste it into a new Claude chat, then paste the answer here.",
+      getPrompts: () => [tasks.buildMindMapPrompt(getT(), { language: mapLang })],
+      fileBase: () => titleBase("mindmap_prompt"),
+      checkLabel: "Save mind map",
+      placeholder: "Paste Claude's answer here",
+      onCheck(text) {
+        const { root, errors } = tasks.parseMindMapAnswer(text, { durationSec: getT().durationSec });
+        if (!root) return { errors };
+        patch({ mindMap: root, mindMapLanguage: mapLang });
+        mapReplacing = false;
+        renderMindMap();
+        return { accepted: true };
+      },
+    });
+    const head = [
+      h("div", { class: "field" },
+        h("label", { text: "Language of the mind map" }),
+        selectWrap(languageSelect(mapLang, (v) => { mapLang = v; flow.refresh(); }))),
+    ];
+    if (t.mindMap) head.push(pill("Cancel", { cls: "small", onclick: () => { mapReplacing = false; renderMindMap(); } }));
+    mapBox.append(h("div", { class: "stack" }, ...head, flow.el));
+  }
+
+  /* -------------------------------------------------------------- */
   /* Tabs                                                            */
   /* -------------------------------------------------------------- */
 
-  const builders = { notes: buildNotes, summary: renderSummary, study: renderStudy };
+  const builders = { notes: buildNotes, summary: renderSummary, study: buildStudy };
 
   function select(id, focus = false) {
     active = id;
@@ -292,6 +355,7 @@ export function createSidePanel({ getT, patch, player, onSeek, getTime, onClose 
     destroy() {
       flushNotes();
       overview.destroy();
+      if (mindMap) mindMap.destroy();
     },
     get active() { return active; },
   };

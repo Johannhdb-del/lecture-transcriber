@@ -3,6 +3,8 @@ import * as storage from "../storage.js";
 import * as deepgram from "../engines/deepgram.js";
 import * as fmt from "../format.js";
 import * as media from "../media-store.js";
+import { readDocument, extractTerms, mergeTerms } from "../doc-terms.js";
+import { DEEPGRAM_TERM_LIMIT, CHECK_TERM_LIMIT } from "../course-terms.js";
 import {
   h, pill, selectWrap, alertBox, errorMessage, baseName, plural, languageLabel, formatDate, LANGUAGES,
 } from "./dom.js";
@@ -186,7 +188,7 @@ export function createSettingsView(ctx) {
 
     const listsCard = h("section", { class: "card stack" },
       h("h2", { text: "Keyterm lists" }),
-      h("p", { class: "muted", text: "Save vocabulary for a course once and pick it for each transcription. One term per line. Lines starting with # are ignored." }),
+      h("p", { class: "muted", text: "Save vocabulary for a course once and pick it for each transcription. One term per line. Lines starting with # are ignored. Add the course literature (PDF, .txt, .md) to a list, and its key terms are used as well." }),
       listsBox,
       h("div", { class: "btn-row" },
         pill("Add list", {
@@ -260,6 +262,7 @@ export function createSettingsView(ctx) {
       h("div", { class: "kt-body stack" },
         h("div", { class: "field" }, h("label", { for: `kt-name-${list.id}`, text: "Name" }), nameInput),
         h("div", { class: "field" }, h("label", { for: `kt-terms-${list.id}`, text: "Terms, one per line" }), termsArea),
+        courseDocs(list, alert),
         h("div", { class: "btn-row" },
           pill("Save list", {
             primary: true,
@@ -282,13 +285,123 @@ export function createSettingsView(ctx) {
           pill("Delete list", {
             danger: true,
             onclick() {
-              if (!window.confirm(`Delete the list "${list.name}"?`)) return;
+              if (!window.confirm(`Delete the list "${list.name}" and its documents?`)) return;
               storage.deleteKeytermList(list.id);
               if (storage.getSettings().keytermListId === list.id) storage.saveSettings({ keytermListId: "" });
+              storage.deleteCourseDocuments(list.id).catch(() => { /* ignore */ });
               render();
             },
           }),
           status)));
+  }
+
+  /* Course documents of a keyterm list --------------------------------- */
+
+  function courseDocs(list, alert) {
+    const docsBox = h("div", { class: "stack-sm" });
+    const termsBox = h("div", { class: "stack-sm" });
+    const progress = h("span", { class: "status", role: "status" });
+    const fileInput = h("input", {
+      type: "file",
+      class: "visually-hidden",
+      accept: ".pdf,application/pdf,.txt,text/plain,.md,text/markdown",
+      multiple: true,
+      async onchange() {
+        const files = [...(fileInput.files || [])];
+        fileInput.value = "";
+        alert.clear();
+        for (const file of files) {
+          try {
+            progress.textContent = `Reading ${file.name}`;
+            const doc = await readDocument(file, {
+              onProgress: (f) => { progress.textContent = `Reading ${file.name}, ${Math.round(f * 100)}%`; },
+            });
+            const terms = extractTerms(doc, { language: storage.getSettings().language });
+            await storage.saveDocument({
+              courseId: list.id, name: doc.name, kind: doc.kind, pages: doc.pages, text: doc.text, emphasis: doc.emphasis, terms,
+            });
+          } catch (err) {
+            alert.show(`${file.name}: ${errorMessage(err)}`);
+          }
+        }
+        progress.textContent = "";
+        refresh();
+      },
+    });
+
+    // Switching a term off marks it in every document of the course, so it stays off when documents change.
+    async function setTermOff(term, off) {
+      const key = term.toLowerCase();
+      for (const d of await storage.listDocuments(list.id)) {
+        let touched = false;
+        for (const t of d.terms || []) {
+          if (String(t.term).toLowerCase() === key && !!t.off !== off) { t.off = off; touched = true; }
+        }
+        if (touched) await storage.saveDocument(d);
+      }
+      refresh();
+    }
+
+    async function refresh() {
+      let docs = [];
+      try { docs = await storage.listDocuments(list.id); } catch (err) { alert.show(`Could not read the documents. ${errorMessage(err)}`); }
+      docsBox.replaceChildren(...(docs.length
+        ? docs.map((d) => h("div", { class: "doc-row" },
+          h("span", { class: "doc-name", text: d.name }),
+          h("span", { class: "muted small", text: `${d.kind === "pdf" ? `${plural(d.pages, "page", "pages")}, ` : ""}${plural((d.terms || []).filter((t) => !t.off).length, "term", "terms")}` }),
+          pill("Remove", {
+            cls: "small",
+            async onclick() {
+              if (!window.confirm(`Remove "${d.name}" from this course?`)) return;
+              try { await storage.deleteDocument(d.id); } catch (err) { alert.show(errorMessage(err)); }
+              refresh();
+            },
+          })))
+        : [h("p", { class: "muted small", text: "No documents yet. Add literature summaries or slides as PDF so their key terms help the transcription." })]));
+
+      termsBox.replaceChildren();
+      if (!docs.length) return;
+      const merged = mergeTerms(docs, { limit: CHECK_TERM_LIMIT });
+      const listTerms = new Set((list.terms || []).map((t) => String(t).toLowerCase()));
+      const free = Math.max(0, DEEPGRAM_TERM_LIMIT - listTerms.size);
+      let sent = 0;
+      const chips = merged.map((t) => {
+        const toDeepgram = !listTerms.has(t.term.toLowerCase()) && sent < free;
+        if (toDeepgram) sent++;
+        return h("button", {
+          type: "button",
+          class: `term-chip${toDeepgram ? " sent" : ""}`,
+          title: "Remove this term",
+          "aria-label": `Remove term ${t.term}`,
+          onclick: () => setTermOff(t.term, true),
+        }, h("span", { text: t.term }), h("span", { class: "term-x", "aria-hidden": "true", text: "×" }));
+      });
+      const offCount = new Set(docs.flatMap((d) => (d.terms || []).filter((t) => t.off).map((t) => String(t.term).toLowerCase()))).size;
+      termsBox.append(
+        h("p", { class: "small", text: `Terms from the documents, best first. The ${sent} highlighted ones also go to Deepgram, after your own ${plural(listTerms.size, "term", "terms")} (about ${DEEPGRAM_TERM_LIMIT} in total). All of them are used by "Check course terms" and "Correct with Claude". Tap a term to remove it.` }),
+        h("div", { class: "term-chips" }, chips));
+      if (offCount) {
+        termsBox.append(pill(`Restore ${plural(offCount, "removed term", "removed terms")}`, {
+          cls: "small",
+          async onclick() {
+            for (const d of await storage.listDocuments(list.id)) {
+              if ((d.terms || []).some((t) => t.off)) {
+                for (const t of d.terms) delete t.off;
+                await storage.saveDocument(d);
+              }
+            }
+            refresh();
+          },
+        }));
+      }
+    }
+
+    refresh();
+    return h("div", { class: "field doc-section" },
+      h("label", { text: "Course documents" }),
+      docsBox,
+      h("div", { class: "btn-row" }, pill("Add document", { iconName: "upload", onclick: () => fileInput.click() }), progress, fileInput),
+      termsBox);
   }
 
   /* Audio storage card ------------------------------------------------- */

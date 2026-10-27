@@ -123,15 +123,19 @@ export function deleteKeytermList(id) {
 
 const DB_NAME = "lecture-transcriber";
 const STORE = "transcripts";
+const DOC_STORE = "documents"; // course documents: { id, courseId, name, kind, pages, addedAt, text, emphasis, terms }
 let dbPromise = null;
 
 function openDb() {
   if (!dbPromise) {
     dbPromise = new Promise((resolve, reject) => {
-      const req = indexedDB.open(DB_NAME, 1);
+      const req = indexedDB.open(DB_NAME, 2);
       req.onupgradeneeded = () => {
         const db = req.result;
         if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: "id" });
+        if (!db.objectStoreNames.contains(DOC_STORE)) {
+          db.createObjectStore(DOC_STORE, { keyPath: "id" }).createIndex("courseId", "courseId");
+        }
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error || new Error("Could not open local storage."));
@@ -145,12 +149,12 @@ function openDb() {
 }
 
 // Run one request in a transaction; resolves after the transaction completes.
-async function withStore(mode, fn) {
+async function withStore(mode, fn, store = STORE) {
   const db = await openDb();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE, mode);
+    const tx = db.transaction(store, mode);
     let result;
-    const req = fn(tx.objectStore(STORE));
+    const req = fn(tx.objectStore(store));
     req.onsuccess = () => {
       result = req.result;
     };
@@ -185,6 +189,31 @@ export async function getTranscript(id) {
 
 export async function deleteTranscript(id) {
   await withStore("readwrite", (s) => s.delete(id));
+}
+
+// ---- Course documents (IndexedDB) ----
+// A course is a keyterm list; its documents give extra terms (see doc-terms.js).
+
+export async function saveDocument(doc) {
+  const item = { ...doc };
+  if (!item.id) item.id = crypto.randomUUID();
+  if (!item.addedAt) item.addedAt = new Date().toISOString();
+  await withStore("readwrite", (s) => s.put(item), DOC_STORE);
+  return item;
+}
+
+export async function listDocuments(courseId) {
+  if (!courseId) return [];
+  const all = (await withStore("readonly", (s) => s.index("courseId").getAll(courseId), DOC_STORE)) || [];
+  return all.sort((a, b) => (a.addedAt < b.addedAt ? -1 : a.addedAt > b.addedAt ? 1 : 0));
+}
+
+export async function deleteDocument(id) {
+  await withStore("readwrite", (s) => s.delete(id), DOC_STORE);
+}
+
+export async function deleteCourseDocuments(courseId) {
+  for (const d of await listDocuments(courseId)) await deleteDocument(d.id);
 }
 
 export async function requestPersistence() {

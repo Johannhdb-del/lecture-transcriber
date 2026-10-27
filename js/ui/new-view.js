@@ -6,6 +6,7 @@ import * as exp from "../export.js";
 import * as media from "../media-store.js";
 import { createRecorder, isRecordingSupported, recoverRecordings, recoverRecording } from "../recorder.js";
 import { createLiveTranscriber, liveToTranscript } from "../live.js";
+import { courseDocTerms, combineTerms } from "../course-terms.js";
 import {
   h, icon, iconBtn, pill, selectWrap, alertBox, errorMessage, baseName, plural, dedupeTerms,
   formatDateTime, clock, LANGUAGES,
@@ -83,6 +84,8 @@ export function createNewView(ctx) {
     liveRendered: 0,        // number of closed finals already rendered (the open one is redrawn each update)
     liveUserAt: 0,          // time of the last touch or scroll by the user in the live box
     savingLive: false,
+    docTerms: [],           // ranked terms from the documents of the selected course
+    docTermsFor: null,      // course id docTerms were loaded for
   };
   const alert = alertBox();
 
@@ -177,6 +180,7 @@ export function createNewView(ctx) {
     onchange() {
       try { storage.saveSettings({ keytermListId: listSelect.value }); } catch { /* ignore */ }
       updateTerms();
+      loadDocTerms();
     },
   });
   const extraTerms = h("textarea", {
@@ -312,13 +316,35 @@ export function createNewView(ctx) {
     }
     let extra = [];
     try { extra = fmt.parseKeyterms(extraTerms.value); } catch { extra = []; }
-    return dedupeTerms([...listTerms, ...extra]);
+    const own = dedupeTerms([...listTerms, ...extra]);
+    return st.docTermsFor === listSelect.value ? combineTerms(own, st.docTerms) : own;
   }
 
   function updateTerms() {
-    const n = getTerms().length;
-    termCount.textContent = `${plural(n, "term", "terms")} will be sent to Deepgram.`;
-    termWarn.hidden = n <= MAX_TERMS_WARNING;
+    const terms = getTerms();
+    const n = terms.length;
+    const own = new Set(getOwnTermKeys());
+    const fromDocs = terms.filter((t) => !own.has(t.toLowerCase())).length;
+    termCount.textContent = `${plural(n, "term", "terms")} will be sent to Deepgram${fromDocs ? `, ${fromDocs} of them from the course documents` : ""}.`;
+    termWarn.hidden = n - fromDocs <= MAX_TERMS_WARNING;
+  }
+
+  function getOwnTermKeys() {
+    const list = listSelect.value ? storage.listKeytermLists().find((l) => l.id === listSelect.value) : null;
+    let extra = [];
+    try { extra = fmt.parseKeyterms(extraTerms.value); } catch { extra = []; }
+    return [...((list && list.terms) || []), ...extra].map((t) => String(t).toLowerCase());
+  }
+
+  // Loads the document terms of the selected course in the background, then refreshes the count.
+  async function loadDocTerms() {
+    const id = listSelect.value;
+    if (st.docTermsFor === id) return;
+    const terms = await courseDocTerms(id);
+    if (listSelect.value !== id) return; // the selection changed meanwhile
+    st.docTerms = terms;
+    st.docTermsFor = id;
+    updateTerms();
   }
 
   function refreshOptions() {
@@ -331,7 +357,9 @@ export function createNewView(ctx) {
       h("option", { value: "", text: "None" }),
       ...lists.map((l) => h("option", { value: l.id, text: `${l.name} (${plural((l.terms || []).length, "term", "terms")})` })));
     listSelect.value = lists.some((l) => l.id === wanted) ? wanted : "";
+    st.docTermsFor = null; // documents may have changed in Settings
     updateTerms();
+    loadDocTerms();
   }
 
   /* Recording --------------------------------------------------------- */
@@ -700,6 +728,7 @@ export function createNewView(ctx) {
     if (!apiKey) { ctx.route(); return; }
 
     const settings = storage.getSettings();
+    await loadDocTerms(); // usually loaded already; never throws
     const keyterms = getTerms();
     const language = langSelect.value;
 
@@ -748,6 +777,7 @@ export function createNewView(ctx) {
       if (!transcript.keyterms) transcript.keyterms = keyterms;
       if (!transcript.createdAt) transcript.createdAt = new Date().toISOString();
       if (!transcript.speakerNames) transcript.speakerNames = {};
+      if (!transcript.courseId && listSelect.value) transcript.courseId = listSelect.value; // for the term check
       // Keep the audio next to the transcript so it can be played back later.
       try {
         await media.saveAudio({ id: transcript.id, blob: file, name: file.name, type: file.type });
