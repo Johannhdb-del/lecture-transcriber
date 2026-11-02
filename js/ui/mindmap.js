@@ -15,7 +15,7 @@ const TIME_H = 14;
 const PAD_X = 10;
 const PAD_Y = 7;
 const MAX_TEXT_W = 160; // plus padding gives the ~180 px node width
-const MAX_LINES = 3;
+const MAX_LINES = 4; // detailed leaves are short phrases of up to 12 words
 const MIN_NODE_W = 44;
 const GAP_X = 52; // space between columns, holds connector and fold toggle
 const GAP_Y = 10; // vertical gap between siblings
@@ -25,6 +25,7 @@ const TOOLBAR_SPACE = 44; // height of the zoom button row at the bottom of the 
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 3;
 const TAP_SLOP = 6; // px of movement before a press counts as a drag
+const TWO_SIDED_FROM = 4; // with this many visible main branches, half of them go to the left of the root
 const AUTO_FOLD_AFTER = 40; // trees with more nodes start folded below level 2
 const MAX_DEPTH = 12;
 const MAX_NODES = 600;
@@ -56,6 +57,8 @@ const GLYPHS = {
   fit: "M4 9V5h4 M20 9V5h-4 M4 15v4h4 M20 15v4h-4",
   enter: "M9 4H4v5 M15 4h5v5 M9 20H4v-5 M15 20h5v-5",
   exit: "M4 9h5V4 M20 9h-5V4 M4 15h5v5 M20 15h-5v5",
+  deeper: "M6 6l6 6-6 6 M12 6l6 6-6 6",
+  shallower: "M18 6l-6 6 6 6 M12 6l-6 6 6 6",
 };
 
 /** Copy the incoming data into plain nodes: drop untitled nodes (their children move up), cap depth and size. */
@@ -166,6 +169,8 @@ export function createMindMap({ root, onSeek } = {}) {
   const btnFull = h("button", { type: "button", class: "icon-btn mm-btn", "aria-label": "Full screen", title: "Full screen", "aria-pressed": "false" });
   btnFull.append(glyph(GLYPHS.enter));
   const toolbar = h("div", { class: "mm-toolbar" },
+    mkBtn(glyph(GLYPHS.shallower), "Close one level", () => stepLevel(-1)),
+    mkBtn(glyph(GLYPHS.deeper), "Open one more level", () => stepLevel(1)),
     mkBtn(icon("plus"), "Zoom in", () => zoomBy(1.3)),
     mkBtn(glyph(GLYPHS.minus), "Zoom out", () => zoomBy(1 / 1.3)),
     mkBtn(glyph(GLYPHS.fit), "Fit to view", () => fit()),
@@ -190,16 +195,11 @@ export function createMindMap({ root, onSeek } = {}) {
 
   const visibleKids = (n) => (n.collapsed ? [] : n.children);
 
-  /** Tidy tree: subtree heights first, then place each node at the middle of its children. */
+  /**
+   * Tidy tree, two-sided like a paper mind map: the main branches are split between the right and the
+   * left of the root (in order, balanced by height), each side is a tidy tree growing outwards.
+   */
   function layout() {
-    const colW = [];
-    (function widths(n) {
-      colW[n.depth] = Math.max(colW[n.depth] || 0, n.w);
-      for (const k of visibleKids(n)) widths(k);
-    })(tree);
-    const colX = [0];
-    for (let d = 1; d < colW.length; d++) colX[d] = colX[d - 1] + colW[d - 1] + GAP_X;
-
     (function heights(n) {
       const kids = visibleKids(n);
       let sum = 0;
@@ -209,21 +209,52 @@ export function createMindMap({ root, onSeek } = {}) {
       n.sh = Math.max(n.h, sum);
     })(tree);
 
-    (function place(n, top) {
-      n.x = colX[n.depth];
+    // Sides: the first main branches go right until about half the height is used, the rest left.
+    const mains = visibleKids(tree);
+    const total = mains.reduce((s, k) => s + k.sh, 0);
+    let used = 0;
+    mains.forEach((k, i) => {
+      const right = mains.length < TWO_SIDED_FROM || i === 0 || used + k.sh / 2 <= total / 2;
+      if (right) used += k.sh;
+      (function mark(n) { n.side = right ? 1 : -1; for (const c of visibleKids(n)) mark(c); })(k);
+    });
+    tree.side = 0;
+    const sideKids = (side) => mains.filter((k) => k.side === side);
+
+    // Column widths per side and depth, then column edges growing away from the root.
+    const colW = { 1: [], "-1": [] };
+    (function widths(n) {
+      if (n.depth > 0) colW[n.side][n.depth] = Math.max(colW[n.side][n.depth] || 0, n.w);
+      for (const k of visibleKids(n)) widths(k);
+    })(tree);
+    const edge = { 1: [0, tree.w + GAP_X], "-1": [0, -GAP_X] }; // right: left edges; left: right edges
+    for (let d = 2; d < colW[1].length; d++) edge[1][d] = edge[1][d - 1] + colW[1][d - 1] + GAP_X;
+    for (let d = 2; d < colW[-1].length; d++) edge[-1][d] = edge[-1][d - 1] - colW[-1][d - 1] - GAP_X;
+
+    function place(n, top) {
+      n.x = n.side < 0 ? edge[-1][n.depth] - n.w : edge[1][n.depth];
       const kids = visibleKids(n);
       if (!kids.length) { n.cy = top + n.sh / 2; return; }
       let y = top + (n.sh - n.kidsH) / 2;
       for (const k of kids) { place(k, y); y += k.sh + GAP_Y; }
       n.cy = (kids[0].cy + kids[kids.length - 1].cy) / 2;
-    })(tree, 0);
+    }
+    tree.x = 0;
+    tree.cy = 0;
+    for (const side of [1, -1]) {
+      const kids = sideKids(side);
+      const h = kids.reduce((s, k) => s + k.sh, 0) + GAP_Y * Math.max(0, kids.length - 1);
+      let y = -h / 2;
+      for (const k of kids) { place(k, y); y += k.sh + GAP_Y; }
+    }
 
     let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
     (function walk(n) {
-      x0 = Math.min(x0, n.x);
+      const tg = n.children.length ? TOGGLE_R * 2 + 4 : 0;
+      x0 = Math.min(x0, n.x - (n.side < 0 ? tg : 0));
+      x1 = Math.max(x1, n.x + n.w + (n.side >= 0 ? tg : 0));
       y0 = Math.min(y0, n.cy - n.h / 2);
       y1 = Math.max(y1, n.cy + n.h / 2);
-      x1 = Math.max(x1, n.x + n.w + (n.children.length ? TOGGLE_R * 2 + 4 : 0));
       for (const k of visibleKids(n)) walk(k);
     })(tree);
     bounds = { x0, y0, x1, y1 };
@@ -241,8 +272,11 @@ export function createMindMap({ root, onSeek } = {}) {
     (function draw(n) {
       const kids = visibleKids(n);
       for (const k of kids) {
-        const x1 = n.x + n.w + (n.children.length ? TOGGLE_R * 2 + 4 : 0);
-        const x2 = k.x;
+        // Links leave the parent on the child's side (behind the fold toggle) and enter the child's inner edge.
+        const tg = n.children.length ? TOGGLE_R * 2 + 4 : 0;
+        const left = k.side < 0;
+        const x1 = left ? n.x - (n.depth > 0 ? tg : 0) : n.x + n.w + tg;
+        const x2 = left ? k.x + k.w : k.x;
         const mx = (x1 + x2) / 2;
         const path = svgEl("path", { class: "mm-link", d: `M${x1} ${n.cy} C${mx} ${n.cy} ${mx} ${k.cy} ${x2} ${k.cy}` });
         path.style.setProperty("--c", colorVar(k));
@@ -289,7 +323,7 @@ export function createMindMap({ root, onSeek } = {}) {
     }
 
     if (n.children.length) {
-      const cx = n.x + n.w + TOGGLE_R + 2;
+      const cx = n.side < 0 ? n.x - TOGGLE_R - 2 : n.x + n.w + TOGGLE_R + 2;
       const tg = svgEl("g", {
         class: "mm-toggle", "data-toggle": n.id, "data-key": `t${n.id}`, role: "button", tabindex: "0",
         "aria-expanded": String(!n.collapsed),
@@ -377,6 +411,24 @@ export function createMindMap({ root, onSeek } = {}) {
       n.collapsed = n.children.length ? (n.depth === 0 ? false : collapsed) : false;
       for (const k of n.children) walk(k);
     })(tree);
+    relayout(null);
+    if (userMoved) fit();
+  }
+
+  // One level deeper: open the shallowest folded branches that are visible. One level less: fold the deepest open ones.
+  function stepLevel(dir) {
+    const folded = [];
+    const open = [];
+    (function walk(n) {
+      if (!n.children.length) return;
+      if (n.collapsed) { folded.push(n); return; }
+      if (n.depth > 0) open.push(n);
+      for (const k of n.children) walk(k);
+    })(tree);
+    const list = dir > 0 ? folded : open.filter((n) => n.children.every((k) => !k.children.length || k.collapsed));
+    if (!list.length) return;
+    const depth = dir > 0 ? Math.min(...list.map((n) => n.depth)) : Math.max(...list.map((n) => n.depth));
+    for (const n of list) if (n.depth === depth) n.collapsed = dir < 0;
     relayout(null);
     if (userMoved) fit();
   }

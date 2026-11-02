@@ -249,8 +249,8 @@ export function parseStudyAidsAnswer(text) {
 /* Mind map                                                            */
 /* ------------------------------------------------------------------ */
 
-const MAP_MAX_DEPTH = 4; // levels below the root
-const MAP_MAX_NODES = 150;
+const MAP_MAX_DEPTH = 6; // levels below the root (the prompt asks for at most 5)
+const MAP_MAX_NODES = 250;
 const MAP_TITLE_KEYS = ["title", "topic", "name", "text"];
 
 export function buildMindMapPrompt(t, { language = t.language } = {}) {
@@ -265,8 +265,9 @@ export function buildMindMapPrompt(t, { language = t.language } = {}) {
     "- Build a mind map of the content structure of the lecture, for exam preparation. Stay faithful to the lecture. Use only what the lecturer says. Do NOT add anything from outside the transcript, and do not invent anything.",
     "- Correct obvious speech recognition misspellings of names and terms (use the course terms if given). Skip anything unclear.",
     `- Write all node titles in ${lang}, whatever the language of the transcript.`,
-    "- The root is the central topic of the lecture. Below it, 4 to 8 main branches (the main themes or parts of the lecture, in the order of the lecture), each with sub-branches. At most 3 levels below the root, about 20 to 60 nodes in total.",
-    "- Node titles are short keyword phrases (1 to 6 words, 8 at most), not sentences. Key names, dates, terms and examples belong in the map as leaf nodes.",
+    "- The root is the central topic of the lecture. Below it, 5 to 9 main branches (the main themes or parts of the lecture, in the order of the lecture). Make the map detailed and deep: every main branch has sub-branches, and most sub-branches have their own sub-branches. Use 3 to 5 levels below the root where the content allows it, about 60 to 150 nodes in total.",
+    "- Go down from the general to the specific: theme, then arguments or aspects, then evidence, examples, names, dates and counter-arguments. Group related points under a common parent instead of listing many siblings; a node should rarely have more than 7 children.",
+    "- Titles of upper levels are short keyword phrases (1 to 6 words). The deepest nodes may be short explanatory phrases (up to 12 words), in the form \"<who or what>: <the point in a few words>\", so the map can be revised without the transcript.",
     '- Each node except the root gets "time": the timestamp from the transcript (as written in the square brackets, for example "12:34" or "1:02:03") of the paragraph where this point is first discussed. Leave "time" out if you are not sure. Never invent a time beyond the lecture.',
     "- Answer with ONLY one JSON code block of exactly this form and nothing before or after it:",
     "```json",
@@ -344,7 +345,7 @@ export function parseMindMapAnswer(text, { durationSec } = {}) {
   const root = normalizeMapNode(found, 0, ctx);
   if (ctx.untitled) errors.push(`${ctx.untitled} node${ctx.untitled === 1 ? " has" : "s have"} no title and ${ctx.untitled === 1 ? "was" : "were"} left out.`);
   if (ctx.deep) errors.push(`${ctx.deep} node${ctx.deep === 1 ? " is" : "s are"} nested deeper than ${MAP_MAX_DEPTH} levels below the root and ${ctx.deep === 1 ? "was" : "were"} left out.`);
-  if (ctx.capped) errors.push(`The map has more than ${MAP_MAX_NODES} nodes. ${ctx.capped} ${ctx.capped === 1 ? "was" : "were"} left out.`);
+  if (ctx.capped) errors.push(`The map has more than ${MAP_MAX_NODES} nodes. The topics beyond that were left out.`);
   if (ctx.badTimes) errors.push(`${ctx.badTimes} time${ctx.badTimes === 1 ? " was" : "s were"} invalid or beyond the lecture and ${ctx.badTimes === 1 ? "was" : "were"} left out.`);
   if (!root || !root.children.length) {
     errors.push("The mind map has no branches below the central topic.");
