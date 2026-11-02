@@ -352,6 +352,13 @@ export function createSidePanel({ getT, patch, player, onSeek, getTime, onClose 
     setBlob: (blob) => overview.setBlob(blob),
     redrawOverview: () => overview.redraw(),
     flush: flushNotes,
+    // Re-renders the built tabs from getT(), e.g. after an import.
+    refresh() {
+      summaryReplacing = false;
+      mapReplacing = false;
+      if (built.has("summary")) renderSummary();
+      if (built.has("study")) renderMindMap();
+    },
     destroy() {
       flushNotes();
       overview.destroy();

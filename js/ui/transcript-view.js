@@ -818,6 +818,94 @@ function buildView(ctx, loaded) {
     return flowCard("Correct with Claude", flow.el);
   }
 
+  /* Exchange with Claude Code (/summaryworkflow) -------------------- */
+
+  function exportForClaude() {
+    commitActive();
+    try {
+      const lists = storage.listKeytermLists();
+      const course = lists.find((l) => l.id === courseIdOf());
+      const data = exp.buildClaudeExport(t, course ? { id: course.id, name: course.name } : null);
+      exp.downloadFile(exp.claudeExportName(t), JSON.stringify(data, null, 1), "application/json");
+      toast("Saved. Put the file into OneDrive, folder Lecture Transcripts, then run /summaryworkflow on the laptop.");
+    } catch (err) {
+      alert.show(`Could not create the export file. ${errorMessage(err)}`);
+    }
+  }
+
+  const importInput = h("input", {
+    type: "file",
+    accept: ".json,application/json",
+    hidden: true,
+    onchange() {
+      const file = importInput.files && importInput.files[0];
+      importInput.value = "";
+      if (file) importFromClaude(file);
+    },
+  });
+
+  async function importFromClaude(file) {
+    let data = null;
+    try {
+      data = JSON.parse(await file.text());
+    } catch {
+      alert.show("This file could not be read. Choose the .claude.json file that /summaryworkflow created.");
+      return;
+    }
+    if (!data || typeof data !== "object" || data.format !== "lecture-transcriber-claude") {
+      alert.show("This is not a file from /summaryworkflow. Choose the .claude.json file it created.");
+      return;
+    }
+    if (data.transcriptId !== t.id) {
+      alert.show("This file belongs to a different transcript. Open the transcript it was made for and import it there.");
+      return;
+    }
+    commitActive();
+    const got = [];
+    try {
+      const hasMap = !!(data.mindMap && typeof data.mindMap === "object" && data.mindMap.title);
+      const hasSummary = typeof data.summary === "string" && !!data.summary.trim();
+      let replace = hasMap || hasSummary;
+      if (replace && (t.summary || t.mindMap)) {
+        replace = window.confirm("Replace the existing summary and mind map with Claude's?");
+      }
+      if (replace) {
+        const fields = {};
+        if (hasSummary) {
+          fields.summary = data.summary;
+          fields.summaryLanguage = data.summaryLanguage || t.language || "de";
+          got.push("summary");
+        }
+        if (hasMap) {
+          fields.mindMap = data.mindMap;
+          fields.mindMapLanguage = data.mindMapLanguage || t.language || "de";
+          got.push("mind map");
+        }
+        patch(fields);
+        panel.refresh();
+      }
+
+      if (Array.isArray(data.corrections) && data.corrections.length) {
+        const { corrections, errors } = corr.parseAnswer(JSON.stringify({ corrections: data.corrections }));
+        if (corrections.length) {
+          closeFlow();
+          activeFlow = "claudeImport";
+          const node = flowCard("Claude's corrections",
+            h("p", { class: "muted", text: "Claude checked the transcript against your course material. Review the suggestions and apply the ones you want; you can revert them later." }),
+            errors.length ? h("p", { class: "hint", text: `${plural(errors.length, "suggestion was", "suggestions were")} skipped because ${errors.length === 1 ? "it was" : "they were"} not valid.` }) : null,
+            buildCorrectionReview({ transcript: t, corrections, onApply: applyNow, heading: "Review and apply" }));
+          flowHost.replaceChildren(node);
+          node.scrollIntoView({ block: "start", behavior: "smooth" });
+          got.push(plural(corrections.length, "correction", "corrections") + " to review");
+        }
+      }
+    } catch (err) {
+      alert.show(`Could not import the file. ${errorMessage(err)}`);
+      return;
+    }
+    toast(got.length ? `Imported: ${got.join(", ")}.` : "Nothing was imported from this file.");
+  }
+
   function applyNow(selected) {
     commitActive();
     pushUndo();
@@ -1029,6 +1117,8 @@ function buildView(ctx, loaded) {
       menuSeparator(),
       menuItem({ iconName: "sparkle", label: "Correct with Claude", onclick: done(() => openFlow("correct")) }),
       menuItem({ iconName: "check", label: "Check course terms", onclick: done(() => openFlow("terms")) }),
+      menuItem({ iconName: "upload", label: "Export for Claude", onclick: done(exportForClaude) }),
+      menuItem({ iconName: "download", label: "Import from Claude", onclick: done(() => importInput.click()) }),
       menuItem({ iconName: "globe", label: "Translate", onclick: done(() => openFlow("translate")) }),
       t.originalParagraphs ? menuItem({ iconName: "undo", label: "Revert corrections", onclick: done(revert) }) : null,
       menuItem({ iconName: "trash", label: "Delete", danger: true, onclick: done(deleteThis) }),
@@ -1099,7 +1189,7 @@ function buildView(ctx, loaded) {
     h("div", { class: "tb-group" }, dlBtn, copyBtn));
 
   const inner = h("div", { class: "tv-inner" },
-    titleEl, metaEl, toolbar, alert.el, searchBar, flowHost, resultHost, switchEl, body);
+    titleEl, metaEl, toolbar, alert.el, searchBar, flowHost, resultHost, switchEl, body, importInput);
   scroller.append(inner);
 
   const mainCol = h("div", { class: "main-col" }, scroller, floatSlot);

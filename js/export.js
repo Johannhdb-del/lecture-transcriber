@@ -200,6 +200,26 @@ export function mindMapToOpml(t) {
   ].join("\n");
 }
 
+// ---- Exchange with Claude Code (/summaryworkflow) ----
+
+// course is { id, name } or null; the transcript goes in as stored.
+export function buildClaudeExport(t, course) {
+  return {
+    format: "lecture-transcriber-export",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    course: { id: (course && course.id) || null, name: (course && course.name) || null },
+    transcript: t,
+  };
+}
+
+// "<title> (<YYYY-MM-DD>).lecture.json"; the date comes from a "Recording YYYY-MM-DD" title, else createdAt.
+export function claudeExportName(t) {
+  const m = /Recording (\d{4}-\d{2}-\d{2})/.exec(String((t && t.title) || ""));
+  const date = m ? m[1] : localDate(t && t.createdAt);
+  return `${safeFilename(t && t.title)}${date ? ` (${date})` : ""}.lecture.json`;
+}
+
 // ---- Files ----
 
 const TRANSLITERATION = { "ä": "ae", "ö": "oe", "ü": "ue", "Ä": "Ae", "Ö": "Oe", "Ü": "Ue", "ß": "ss" };
