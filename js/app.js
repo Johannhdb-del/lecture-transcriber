@@ -302,6 +302,76 @@ document.addEventListener("click", (e) => {
   if (b && !b.closest("[role='tablist']")) setTimeout(() => { if (document.activeElement === b) b.blur(); }, 0);
 });
 
+/* ------------------------------------------------------------------ */
+/* Drop or paste an audio file anywhere                                */
+/* ------------------------------------------------------------------ */
+
+const MEDIA_EXT = /\.(m4a|mp4|mp3|wav|mov|webm|ogg|oga|opus|aac|flac|amr|3gp|caf|aif|aiff|wma|mkv|m4v)$/i;
+const isMedia = (f) => !!f && (/^(audio|video)\//.test(f.type || "") || MEDIA_EXT.test(f.name || ""));
+const hasFiles = (dt) => !!dt && Array.from(dt.types || []).includes("Files");
+
+const dropOverlay = h("div", { class: "drop-overlay", hidden: true, "aria-hidden": "true" },
+  h("div", { class: "drop-box" }, icon("upload", 28), h("span", { text: "Drop the recording to transcribe it" })));
+document.body.append(dropOverlay);
+let dragDepth = 0;
+
+function showDrop(on) {
+  dropOverlay.hidden = !on;
+  if (!on) dragDepth = 0;
+}
+
+/** Puts a dropped or pasted file into the New transcription screen and opens it. */
+function takeFiles(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return false;
+  const file = files.find(isMedia);
+  if (!file) {
+    toast("That is not an audio or video file.");
+    return true;
+  }
+  if (!storage.getApiKey()) {
+    toast("Add your Deepgram key first.");
+    return true;
+  }
+  if (!newViewApi) newViewApi = createNewView(ctx);
+  const problem = newViewApi.acceptFile(file);
+  if (problem) toast(problem);
+  if (isNarrow()) setSidebar(false, false);
+  navigate("#new");
+  return true;
+}
+
+window.addEventListener("dragenter", (e) => {
+  if (!hasFiles(e.dataTransfer)) return;
+  e.preventDefault();
+  dragDepth++;
+  showDrop(true);
+});
+window.addEventListener("dragover", (e) => {
+  if (!hasFiles(e.dataTransfer)) return;
+  e.preventDefault(); // without this the browser would open the file and leave the app
+  e.dataTransfer.dropEffect = "copy";
+});
+window.addEventListener("dragleave", (e) => {
+  if (!hasFiles(e.dataTransfer)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (!dragDepth) showDrop(false);
+});
+window.addEventListener("drop", (e) => {
+  showDrop(false);
+  if (!hasFiles(e.dataTransfer)) return;
+  e.preventDefault();
+  takeFiles(e.dataTransfer.files);
+});
+
+// Paste a file copied in Explorer or Finder (Ctrl+V / Cmd+V). Pasted text is left alone.
+document.addEventListener("paste", (e) => {
+  const files = e.clipboardData && e.clipboardData.files;
+  if (!files || !files.length || !Array.from(files).some(isMedia)) return;
+  e.preventDefault();
+  takeFiles(files);
+});
+
 initSidebar();
 refreshHistory();
 route();

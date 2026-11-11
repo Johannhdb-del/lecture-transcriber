@@ -213,17 +213,7 @@ export function createNewView(ctx) {
       options,
       fileInput));
 
-  // Drag and drop (desktop)
-  card.addEventListener("dragover", (e) => { if (st.mode === "idle" || st.mode === "ready") { e.preventDefault(); card.classList.add("drop"); } });
-  card.addEventListener("dragleave", () => card.classList.remove("drop"));
-  card.addEventListener("drop", (e) => {
-    card.classList.remove("drop");
-    if (st.mode !== "idle" && st.mode !== "ready") return;
-    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    if (!f) return;
-    e.preventDefault();
-    setFile(f, "upload");
-  });
+  // Drag and drop and pasting files are handled for the whole window in app.js, which calls acceptFile().
 
   /* Rendering the card ------------------------------------------------ */
 
@@ -817,6 +807,17 @@ export function createNewView(ctx) {
       refreshOptions();
       if (st.mode === "idle" || st.mode === "ready") st.mode = mode === "record" ? "ready" : "idle";
       update();
+    },
+    /** A file dropped or pasted anywhere in the app. Returns an error message, or "" when the file was taken. */
+    acceptFile(file) {
+      if (st.mode !== "idle" && st.mode !== "ready") {
+        return "Finish the current recording or transcription first.";
+      }
+      if (st.file && st.source === "recording" && !window.confirm("Replace the current recording? It has not been transcribed yet. Use Save to device first if you want to keep it.")) {
+        return "Kept the current recording.";
+      }
+      setFile(file, "upload");
+      return "";
     },
   };
 }

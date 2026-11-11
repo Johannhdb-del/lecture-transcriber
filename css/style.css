@@ -420,7 +420,18 @@ input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--primary)
   min-height: 190px;
   display: flex; flex-direction: column; justify-content: space-between; gap: 24px;
 }
-.compose-card.drop { border-color: var(--text); }
+.drop-overlay {
+  position: fixed; inset: 0; z-index: 300; pointer-events: none;
+  display: grid; place-items: center; padding: 16px;
+  background: rgba(0, 0, 0, 0.25);
+}
+.drop-overlay[hidden] { display: none; }
+.drop-box {
+  display: flex; align-items: center; gap: 12px;
+  padding: 28px 36px; border: 2px dashed var(--text); border-radius: 28px;
+  background: var(--card); color: var(--text); font-size: 19px; font-weight: 600;
+  box-shadow: var(--shadow);
+}
 .compose-main { min-height: 56px; min-width: 0; }
 .ph-text { margin: 0; color: var(--muted); font-size: 19px; }
 .file-chip { display: flex; align-items: center; gap: 12px; }
