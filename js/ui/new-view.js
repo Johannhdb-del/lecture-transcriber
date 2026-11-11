@@ -9,7 +9,7 @@ import { createLiveTranscriber, liveToTranscript } from "../live.js";
 import { courseDocTerms, combineTerms } from "../course-terms.js";
 import {
   h, icon, iconBtn, pill, selectWrap, alertBox, errorMessage, baseName, plural, dedupeTerms,
-  formatDateTime, clock, LANGUAGES,
+  formatDateTime, clock, LANGUAGES, isMediaFile,
 } from "./dom.js";
 import { state, setBusy } from "./state.js";
 
@@ -106,6 +106,41 @@ export function createNewView(ctx) {
 
   // Placeholder or chosen file
   const placeholder = h("div", { class: "compose-placeholder" });
+
+  // Paste field: tap, then Paste (long press on the iPad, Ctrl+V or Cmd+V on a computer).
+  // A textarea, because Safari only offers Paste on an editable field. inputmode "none" keeps the keyboard away.
+  const pasteNote = h("p", { class: "hint paste-note", hidden: true, "aria-live": "polite" });
+  const pasteField = h("textarea", {
+    class: "paste-field",
+    rows: 1,
+    inputmode: "none",
+    placeholder: "Paste a copied audio file here",
+    "aria-label": "Paste a copied audio file here",
+    spellcheck: false,
+    autocapitalize: "none",
+    autocomplete: "off",
+    oninput() { pasteField.value = ""; }, // only files, never typed text
+  });
+  pasteField.addEventListener("paste", (e) => {
+    e.preventDefault();
+    e.stopPropagation(); // handled here, not by the window wide paste in app.js
+    pasteField.value = "";
+    const files = Array.from((e.clipboardData && e.clipboardData.files) || []);
+    const file = files.find(isMediaFile);
+    if (!file) {
+      showPasteNote(files.length
+        ? "That is not an audio or video file."
+        : "No file to paste. Copy the recording first, for example in the Files app with a long press and Copy.");
+      return;
+    }
+    pasteField.blur();
+    const problem = api.acceptFile(file);
+    if (problem) showPasteNote(problem);
+  });
+  function showPasteNote(text) {
+    pasteNote.textContent = text;
+    pasteNote.hidden = false;
+  }
 
   // Recording panel
   const recDot = h("span", { class: "rec-dot", "aria-hidden": "true" });
@@ -219,9 +254,13 @@ export function createNewView(ctx) {
 
   function renderPlaceholder() {
     if (!st.file) {
-      placeholder.replaceChildren(h("p", { class: "ph-text", text: "Choose a recording or record a lecture" }));
+      placeholder.replaceChildren(
+        h("p", { class: "ph-text", text: "Choose, drop or paste a recording, or record a lecture" }),
+        pasteField,
+        pasteNote);
       return;
     }
+    pasteNote.hidden = true;
     const nodes = [
       h("div", { class: "file-chip" },
         icon("file", 20),
@@ -799,8 +838,7 @@ export function createNewView(ctx) {
     ctx.navigate(`#t/${encodeURIComponent(transcript.id)}`);
   }
 
-  update();
-  return {
+  const api = {
     el,
     /** Called every time the view is shown. mode "record" shows the big record button. */
     show(mode) {
@@ -820,4 +858,6 @@ export function createNewView(ctx) {
       return "";
     },
   };
+  update();
+  return api;
 }

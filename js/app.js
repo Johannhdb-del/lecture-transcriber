@@ -2,7 +2,7 @@
 import * as storage from "./storage.js";
 import * as media from "./media-store.js";
 import {
-  h, icon, iconBtn, pill, errorMessage, toast,
+  h, icon, iconBtn, pill, errorMessage, toast, isMediaFile,
   openPopover, closePopover, popoverOpenFor, menuItem,
 } from "./ui/dom.js";
 import { state, on, isBusy } from "./ui/state.js";
@@ -306,8 +306,7 @@ document.addEventListener("click", (e) => {
 /* Drop or paste an audio file anywhere                                */
 /* ------------------------------------------------------------------ */
 
-const MEDIA_EXT = /\.(m4a|mp4|mp3|wav|mov|webm|ogg|oga|opus|aac|flac|amr|3gp|caf|aif|aiff|wma|mkv|m4v)$/i;
-const isMedia = (f) => !!f && (/^(audio|video)\//.test(f.type || "") || MEDIA_EXT.test(f.name || ""));
+const isMedia = isMediaFile;
 const hasFiles = (dt) => !!dt && Array.from(dt.types || []).includes("Files");
 
 const dropOverlay = h("div", { class: "drop-overlay", hidden: true, "aria-hidden": "true" },

@@ -439,6 +439,16 @@ input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--primary)
 .file-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-size { color: var(--muted); font-size: 14px; }
 .compose-placeholder .btn-row { margin-top: 12px; }
+.paste-field {
+  display: block; width: 100%; margin-top: 14px; resize: none;
+  padding: 10px 14px; min-height: 44px;
+  border: 1px dashed var(--border); border-radius: 14px;
+  background: var(--tint); color: var(--text);
+  font: inherit; font-size: 16px; caret-color: transparent;
+}
+.paste-field::placeholder { color: var(--muted); }
+.paste-field:focus { outline: none; border-color: var(--text); }
+.paste-note { margin: 8px 0 0; }
 .compose-actions { display: flex; align-items: center; gap: 10px; }
 
 .rec-panel { display: grid; gap: 14px; justify-items: start; }

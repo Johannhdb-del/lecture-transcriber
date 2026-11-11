@@ -194,6 +194,13 @@ export function baseName(filename) {
   return String(filename || "").replace(/\.[^./\\]+$/, "") || "Untitled";
 }
 
+const MEDIA_EXT = /\.(m4a|mp4|mp3|wav|mov|webm|ogg|oga|opus|aac|flac|amr|3gp|caf|aif|aiff|wma|mkv|m4v)$/i;
+
+/** True for an audio or video file, judged by its type or, when the type is empty, its extension. */
+export function isMediaFile(f) {
+  return !!f && (/^(audio|video)\//.test(f.type || "") || MEDIA_EXT.test(f.name || ""));
+}
+
 export function plural(n, one, many) {
   return `${n} ${n === 1 ? one : many}`;
 }
